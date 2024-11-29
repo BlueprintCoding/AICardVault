@@ -1,0 +1,5 @@
+
+/CharacterCards
+db/database.db
+/venv
+/utils/__pycache__
