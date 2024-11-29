@@ -31,12 +31,14 @@ class DatabaseManager:
 
         # Extra Images Table
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS extra_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            character_id INTEGER,
-            file_path TEXT,
-            notes TEXT,
-            FOREIGN KEY(character_id) REFERENCES characters(id)
+        CREATE TABLE IF NOT EXISTS character_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        image_name TEXT NOT NULL,
+        image_note TEXT,
+        created_date TEXT NOT NULL,
+        last_modified_date TEXT NOT NULL,
+        character_id INTEGER NOT NULL,
+        FOREIGN KEY (character_id) REFERENCES characters (id)
         )
         """)
 
