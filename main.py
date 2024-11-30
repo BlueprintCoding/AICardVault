@@ -193,67 +193,45 @@ class CharacterCardManagerApp(ctk.CTk):
         char_frame.character_id = character["id"]  # Assign the character ID
         char_frame.character_name = character["name"]  # Assign the character name
         char_frame.pack(pady=5, padx=5, fill="x")
-        
+
         image_path = character.get("image_path", "assets/default_thumbnail.png")
         created_date = character.get("created_date", "Unknown Date")
         last_modified_date = character.get("last_modified_date", "Unknown Date")
 
-        # Reformat the created_date to MM/DD/YYYY HH:MM (12hr format)
-        if created_date != "Unknown Date":
-            created_date_obj = datetime.strptime(created_date, "%Y-%m-%d %H:%M:%S")
-            formatted_created_date = created_date_obj.strftime("%m/%d/%Y %I:%M %p")
-        else:
-            formatted_created_date = created_date
+        # Reformat dates for display
+        formatted_created_date = self.format_date(created_date)
+        formatted_last_modified_date = self.format_date(last_modified_date)
 
-        # Reformat the last_modified_date to MM/DD/YYYY HH:MM (12hr format)
-        if last_modified_date != "Unknown Date":
-            last_modified_date_obj = datetime.strptime(last_modified_date, "%Y-%m-%d %H:%M:%S")
-            formatted_last_modified_date = last_modified_date_obj.strftime("%m/%d/%Y %I:%M %p")
-        else:
-            formatted_last_modified_date = last_modified_date
-
-        # Use grid for layout inside char_frame
+        # Layout for character frame
         char_frame.grid_columnconfigure(0, weight=0)  # Fixed size for image column
         char_frame.grid_columnconfigure(1, weight=1)  # Flexible size for text column
 
-        # Create a frame for the image
-        image_frame = ctk.CTkFrame(char_frame, width=50, height=75, fg_color="transparent")
-        image_frame.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky="n")  # Align top
-
-        # Add thumbnail
+        # Add Thumbnail
         thumbnail = self.create_thumbnail(image_path)
-        thumbnail_label = ctk.CTkLabel(image_frame, image=thumbnail, text="")
+        thumbnail_label = ctk.CTkLabel(char_frame, image=thumbnail, text="")
         thumbnail_label.image = thumbnail
-        thumbnail_label.pack()
+        thumbnail_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky="n")
 
-        # Bind the click event to the thumbnail
-        thumbnail_label.bind(
-            "<Button-1>",
-            lambda e, char_id=character["id"]: self.select_character_by_id(char_id),
-        )
-
-        # Add text directly to char_frame
+        # Character Name Label
         name_label = ctk.CTkLabel(char_frame, text=character["name"], anchor="w", font=ctk.CTkFont(size=14, weight="bold"))
-        name_label.grid(row=0, column=1, sticky="w", padx=5, pady=(0, 0))  # Top padding for spacing
+        name_label.grid(row=0, column=1, sticky="w", padx=5)
 
-        created_date_label = ctk.CTkLabel(
-            char_frame, text=f"Created: {formatted_created_date}", anchor="w", font=ctk.CTkFont(size=12)
-        )
-        created_date_label.grid(row=1, column=1, sticky="w", padx=5, pady=(0, 0))  # Minimal vertical padding
+        # Created Date Label
+        created_date_label = ctk.CTkLabel(char_frame, text=f"Created: {formatted_created_date}", anchor="w", font=ctk.CTkFont(size=12))
+        created_date_label.grid(row=1, column=1, sticky="w", padx=5)
 
-        modified_date_label = ctk.CTkLabel(
-            char_frame, text=f"Last Modified: {formatted_created_date}", anchor="w", font=ctk.CTkFont(size=12)
-        )
-        modified_date_label.grid(row=2, column=1, sticky="w", padx=5, pady=(0, 0))  # Minimal vertical padding
+        # Last Modified Date Label
+        modified_date_label = ctk.CTkLabel(char_frame, text=f"Last Modified: {formatted_last_modified_date}", anchor="w", font=ctk.CTkFont(size=12))
+        modified_date_label.grid(row=2, column=1, sticky="w", padx=5)
 
-        # Add click event for selection to the entire frame and its children
+        # Bind click events to `select_character_by_id`
         widgets_to_bind = [char_frame, thumbnail_label, name_label, created_date_label, modified_date_label]
         for widget in widgets_to_bind:
-            widget.bind("<Button-1>", lambda e, char=character: self.select_character(char))
+            widget.bind("<Button-1>", lambda e, char_id=character["id"]: self.select_character_by_id(char_id))
 
-        # Update the card count label
+        # Update card count
         self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
-
+        
     def filter_character_list(self):
         """Filter the character list based on the search query."""
         query = self.search_var.get().lower().strip()
@@ -607,26 +585,22 @@ class CharacterCardManagerApp(ctk.CTk):
         self.add_character_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
 
     def import_aicc_card(self):
+        """Import a card from AICC and handle only the file import."""
         card_id = self.card_id_entry.get().strip()
         if not card_id:
             self.show_add_character_message("Please enter a valid Card ID.", "error")
             return
 
         try:
+            # Fetch the card details from AICC
             downloaded_file = AICCImporter.fetch_card(card_id)
-            # Populate the name field with the card's name
-            character_name = os.path.splitext(os.path.basename(downloaded_file))[0]
-            self.character_name_entry.delete(0, "end")
-            self.character_name_entry.insert(0, character_name)
+
+            # Populate only the file path field
             self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, downloaded_file)
-            
+
             # Show success message
-            self.show_add_character_message("Card imported successfully.", "success")
-            
-            # Enable and show the "Automatically add card to SillyTavern" checkbox
-            self.auto_add_checkbox.configure(state="normal")
-            self.auto_add_checkbox.pack()
+            self.show_add_character_message("Card imported successfully. Fill in other details before saving.", "success")
 
         except Exception as e:
             self.show_add_character_message(f"Error importing card: {str(e)}", "error")
@@ -659,54 +633,10 @@ class CharacterCardManagerApp(ctk.CTk):
             self.character_name_entry.delete(0, "end")
             self.character_name_entry.insert(0, default_name)
 
-    def import_data(self):
-        print("Import Data clicked")
 
     def export_data(self):
         print("Export Data clicked")
 
-    def select_character(self, character):
-        """Handle character selection and populate the edit panel."""
-        try:
-            # Fetch character data from the database
-            connection = sqlite3.connect(self.db_manager.db_path)
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT id, name, main_file, notes, misc_notes, created_date, last_modified_date 
-                FROM characters WHERE name = ?
-                """,
-                (character["name"],)
-            )
-            result = cursor.fetchone()
-            connection.close()
-
-            if result:
-                # Store the ID of the selected character
-                self.selected_character_id = result[0]
-                name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
-
-                # Safely update the edit panel
-                self.name_entry.delete(0, "end")
-                self.name_entry.insert(0, name)
-
-                self.main_file_label.configure(text=f"Main File: {main_file}")
-
-                self.notes_textbox.delete("1.0", "end")
-                self.notes_textbox.insert("1.0", notes or "")
-
-                self.misc_notes_textbox.delete("1.0", "end")
-                self.misc_notes_textbox.insert("1.0", misc_notes or "")
-
-                self.created_date_label.configure(
-                    text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-                )
-                self.last_modified_date_label.configure(
-                    text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-                )
-
-        except Exception as e:
-            print(f"Error in select_character: {e}")
 
     def update_currently_selected_character(self, character_name, image_path):
         """Update the sidebar with the currently selected character."""
@@ -752,24 +682,35 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def save_changes(self):
         """Save changes made in the edit panel to the database."""
-        # Fetch data from the edit panel
-        character_name = self.name_entry.get().strip()
-        main_file = self.main_file_label.cget("text").replace("Main File: ", "").strip()
-        notes = self.notes_textbox.get("1.0", "end").strip()
-        misc_notes = self.misc_notes_textbox.get("1.0", "end").strip()
-
-        # Validate input
-        if not character_name:
-            self.show_message("Character name cannot be empty.", "error")
-            return
-
-        # Generate a new last_modified_date
-        last_modified_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         try:
-            # Ensure we have a valid character ID
-            if not hasattr(self, 'selected_character_id'):
-                raise ValueError("No character selected for saving changes.")
+            # Validate that widgets still exist
+            if not all([
+                self.name_entry.winfo_exists(),
+                self.main_file_label.winfo_exists(),
+                self.notes_textbox.winfo_exists(),
+                self.misc_notes_textbox.winfo_exists()
+            ]):
+                self.show_message("The edit panel has been refreshed or is invalid. Please select the character again.", "error")
+                return
+
+            # Fetch data from the edit panel
+            character_name = self.name_entry.get().strip()
+            main_file = self.main_file_label.cget("text").replace("Main File: ", "").strip()
+            notes = self.notes_textbox.get("1.0", "end").strip()
+            misc_notes = self.misc_notes_textbox.get("1.0", "end").strip()
+
+            # Validate input
+            if not character_name:
+                self.show_message("Character name cannot be empty.", "error")
+                return
+
+            # Generate a new last_modified_date
+            last_modified_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Ensure a character is selected
+            if not hasattr(self, "selected_character_id"):
+                self.show_message("No character selected for saving changes.", "error")
+                return
 
             # Debugging: Print the ID being updated
             print(f"Updating character ID: {self.selected_character_id}")
@@ -797,32 +738,22 @@ class CharacterCardManagerApp(ctk.CTk):
                 if os.path.exists(old_folder_path):
                     os.rename(old_folder_path, new_folder_path)
                 else:
-                    print(f"Folder not found: {old_folder_path}")
-                    self.show_message("Folder not found. Unable to rename.", "error")
+                    self.show_message("Character folder not found. Unable to rename.", "error")
                     return
 
             # Update the database record
             connection = sqlite3.connect(self.db_manager.db_path)
             cursor = connection.cursor()
-
-            query = """
+            cursor.execute(
+                """
                 UPDATE characters
                 SET name = ?, notes = ?, misc_notes = ?, last_modified_date = ?
                 WHERE id = ?
-            """
-            cursor.execute(
-                query,
+                """,
                 (character_name, notes, misc_notes, last_modified_date, self.selected_character_id)
             )
-            
-            # Commit the transaction
             connection.commit()
             connection.close()
-
-            # Check if any row was updated
-            if cursor.rowcount == 0:
-                self.show_message("No matching record found. Please check the character ID.", "error")
-                return
 
             # Update the UI dynamically
             self.update_character_list(self.selected_character_id, character_name, last_modified_date)
@@ -835,7 +766,7 @@ class CharacterCardManagerApp(ctk.CTk):
     def select_character_by_id(self, character_id):
         """Handle character selection by ID and populate the edit panel."""
         try:
-            # Fetch all fields from the database for the selected character
+            # Fetch character details from the database
             connection = sqlite3.connect(self.db_manager.db_path)
             cursor = connection.cursor()
             cursor.execute(
@@ -849,36 +780,70 @@ class CharacterCardManagerApp(ctk.CTk):
             connection.close()
 
             if result:
-                # Store the ID of the selected character
-                self.selected_character_id = result[0]  # Save the ID for later updates
+                # Extract data
+                self.selected_character_id = result[0]
                 name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
 
                 # Handle None values
                 notes = notes or ""
                 misc_notes = misc_notes or ""
 
-                # Populate the fields in the edit panel
-                self.name_entry.delete(0, "end")
-                self.name_entry.insert(0, name)
-
-                self.main_file_label.configure(text=f"Main File: {main_file}")
-                self.notes_textbox.delete("1.0", "end")
-                self.notes_textbox.insert("1.0", notes)
-
-                self.misc_notes_textbox.delete("1.0", "end")
-                self.misc_notes_textbox.insert("1.0", misc_notes)
-
-                self.created_date_label.configure(
-                    text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+                # Safely update the edit panel fields
+                self.update_edit_panel(
+                    name=name,
+                    main_file=main_file,
+                    notes=notes,
+                    misc_notes=misc_notes,
+                    created_date=created_date,
+                    last_modified_date=last_modified_date,
                 )
-                self.last_modified_date_label.configure(
-                    text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-                )
+            else:
+                # Handle case where the character does not exist
+                self.clear_edit_panel()
+                self.show_message("Character not found. Please refresh the list.", "error")
 
         except Exception as e:
             print(f"Error in select_character_by_id: {e}")
 
+    def update_edit_panel(self, name, main_file, notes, misc_notes, created_date, last_modified_date):
+        """Update the edit panel fields."""
+        # Update character name
+        if self.name_entry.winfo_exists():
+            self.name_entry.delete(0, "end")
+            self.name_entry.insert(0, name)
 
+        # Update main file label
+        if self.main_file_label.winfo_exists():
+            self.main_file_label.configure(text=f"Main File: {main_file}")
+
+        # Update character notes
+        if self.notes_textbox.winfo_exists():
+            self.notes_textbox.delete("1.0", "end")
+            self.notes_textbox.insert("1.0", notes)
+
+        # Update miscellaneous notes
+        if self.misc_notes_textbox.winfo_exists():
+            self.misc_notes_textbox.delete("1.0", "end")  # Clear previous data
+            self.misc_notes_textbox.insert("1.0", misc_notes)
+
+        # Update created and modified dates
+        if self.created_date_label.winfo_exists():
+            self.created_date_label.configure(
+                text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+            )
+
+        if self.last_modified_date_label.winfo_exists():
+            self.last_modified_date_label.configure(
+                text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+            )
+
+    def format_date(self, date_string):
+        """Format a date string for display."""
+        try:
+            date_obj = datetime.strptime(date_string, "%Y-%m-%d %H:%M:%S")
+            return date_obj.strftime("%m/%d/%Y %I:%M %p")
+        except Exception:
+            return "Unknown Date"
 
 
     def update_character_list(self, character_id, character_name, last_modified_date):
@@ -946,8 +911,8 @@ class CharacterCardManagerApp(ctk.CTk):
         try:
             # Handle file from the file browser
             if file_path:
-                shutil.copy(file_path, character_dir)
                 final_file_path = os.path.join(character_dir, os.path.basename(file_path))
+                shutil.copy(file_path, final_file_path)
 
             # Handle imported PNG via API
             elif hasattr(self, "imported_png_path") and os.path.exists(self.imported_png_path):
@@ -977,16 +942,22 @@ class CharacterCardManagerApp(ctk.CTk):
                 (character_name, os.path.basename(final_file_path), character_notes, misc_notes, created_date, last_modified_date),
             )
             connection.commit()
+
+            # Get the newly created character ID
+            new_character_id = cursor.lastrowid
             connection.close()
 
             # Update the character list in the UI
             self.add_character_to_list({
-                "id": cursor.lastrowid,
+                "id": new_character_id,
                 "name": character_name,
                 "image_path": final_file_path,
                 "created_date": created_date,
                 "last_modified_date": last_modified_date,
             })
+
+            # Refresh the edit panel with the newly saved character
+            self.select_character_by_id(new_character_id)
 
             # Show success message and close the modal
             self.show_add_character_message("Character added successfully!", "success")

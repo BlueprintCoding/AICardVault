@@ -11,33 +11,40 @@ class AICCImporter:
     def fetch_card(card_id):
         """Fetch a card PNG file from the API based on the given card ID."""
         try:
+            # Validate and parse the card ID
             parts = card_id.split("/")
             if len(parts) != 3 or parts[0] != "AICC":
                 raise ValueError("Invalid card ID format. Expected 'AICC/author/title'.")
 
-            author = quote(parts[1])  # Ensure URL-encoded
-            title = quote(parts[2])   # Ensure URL-encoded
+            # Encode URL components
+            author = quote(parts[1])
+            title = quote(parts[2])
             url = f"{AICCImporter.BASE_URL}/{author}/{title}"
-            referer = f"OS: {platform.system()} {platform.release()} ({platform.architecture()[0]}), Processor: {platform.processor()}, Locale: {locale.getdefaultlocale()[0]}"
+
+            # Generate the referer for logging purposes
+            referer = (
+                f"OS: {platform.system()} {platform.release()} ({platform.architecture()[0]}), "
+                f"Processor: {platform.processor()}, Locale: {locale.getdefaultlocale()[0]}"
+            )
 
             headers = {
                 "User-Agent": "AICardVault/1.0",
                 "Referer": referer,
             }
 
-            # Perform the GET request
+            # Send GET request to the API
             response = requests.get(url, headers=headers, stream=True)
             if response.status_code != 200:
-                print(f"Response: {response.text[:500]}")  # Log response for debugging
+                print(f"Response: {response.text[:500]}")  # Debugging: Log response
                 raise ValueError(f"API returned an error: {response.status_code} - {response.reason}")
 
-            # Debugging: Ensure Content-Type is PNG
+            # Validate response Content-Type
             content_type = response.headers.get("Content-Type")
             if content_type != "image/png":
-                print(f"Response content:\n{response.text[:500]}")  # Log partial response
+                print(f"Response content:\n{response.text[:500]}")  # Debugging: Log response
                 raise ValueError(f"Unexpected Content-Type: {content_type}")
 
-            # Save the PNG content locally
+            # Save the PNG file locally
             filename = f"{title}.png"
             filepath = os.path.join(os.getcwd(), filename)
 
@@ -45,18 +52,19 @@ class AICCImporter:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            # Ensure file integrity by checking magic bytes
+            # Validate the file's integrity using PNG magic bytes
             with open(filepath, "rb") as f:
                 header = f.read(8)
                 if not header.startswith(b"\x89PNG\r\n\x1a\n"):
                     raise ValueError("Downloaded file is not a valid PNG.")
 
             print(f"Downloaded {filename} successfully.")
+
+            # Return only the file path
             return filepath
 
-        except requests.exceptions.HTTPError as e:
+        except requests.exceptions.RequestException as e:
             print(f"HTTP Error: {e}")
-            print(f"Response text: {e.response.text}")
             raise
         except Exception as e:
             print(f"Error fetching card: {e}")
