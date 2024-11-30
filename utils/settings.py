@@ -1,0 +1,86 @@
+import customtkinter as ctk
+from tkinter import filedialog
+
+class SettingsModal:
+    def __init__(self, parent, db_manager, update_settings_callback):
+        self.parent = parent
+        self.db_manager = db_manager
+        self.update_settings_callback = update_settings_callback
+        self.modal = None
+
+    def open(self):
+        # Create the modal wiself.modal = ctk.CTkToplevel(self.parent)ndow
+        self.modal = ctk.CTkToplevel(self.parent)
+        self.modal.title("Settings")
+        self.modal.geometry("400x300")
+
+        # Ensure the modal stays on top of the main window
+        self.modal.transient(self.parent)
+        self.modal.grab_set()
+
+        # Load current settings
+        current_appearance = self.db_manager.get_setting("appearance_mode", "dark")
+        current_path = self.db_manager.get_setting("sillytavern_path", "")
+
+        # Appearance Mode Option
+        appearance_label = ctk.CTkLabel(self.modal, text="Appearance Mode:")
+        appearance_label.pack(pady=10, padx=10, anchor="w")
+
+        self.appearance_option = ctk.CTkOptionMenu(
+            self.modal,
+            values=["Dark", "Light"],
+        )
+        self.appearance_option.set(current_appearance.capitalize())
+        self.appearance_option.pack(pady=5, padx=10, fill="x")
+
+        # SillyTavern Path Selection
+        path_label = ctk.CTkLabel(self.modal, text="Path to SillyTavern User Folder (EX: C:\SillyTavern\data\default-user\characters):")
+        path_label.pack(pady=10, padx=10, anchor="w")
+
+        self.path_entry = ctk.CTkEntry(self.modal, width=300)
+        self.path_entry.insert(0, current_path)
+        self.path_entry.pack(pady=5, padx=10, fill="x")
+
+        browse_button = ctk.CTkButton(
+            self.modal, text="Browse", command=self.browse_folder
+        )
+        browse_button.pack(pady=5, padx=10, anchor="e")
+
+        # Save Button
+        save_button = ctk.CTkButton(self.modal, text="Save", command=self.save_settings)
+        save_button.pack(pady=10, padx=10, anchor="e")
+
+    def browse_folder(self):
+        """Open a folder dialog to select the SillyTavern folder."""
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            self.path_entry.delete(0, "end")
+            self.path_entry.insert(0, folder_path)
+
+    def save_settings(self):
+        """Save the updated settings to the database."""
+        appearance_mode = self.appearance_option.get().lower()
+        sillytavern_path = self.path_entry.get()
+
+        # Update the database
+        self.db_manager.set_setting("appearance_mode", appearance_mode)
+        self.db_manager.set_setting("sillytavern_path", sillytavern_path)
+
+        # Callback to update settings in the main app
+        self.update_settings_callback({
+            "appearance_mode": appearance_mode,
+            "sillytavern_path": sillytavern_path
+        })
+
+        # Close the modal
+        self.modal.destroy()
+
+    @staticmethod
+    def _center_modal(window):
+        """Center the modal on the screen."""
+        window.update_idletasks()
+        width = window.winfo_width()
+        height = window.winfo_height()
+        x = (window.winfo_screenwidth() // 2) - (width // 2)
+        y = (window.winfo_screenheight() // 2) - (height // 2)
+        window.geometry(f"{width}x{height}+{x}+{y}")

@@ -257,7 +257,7 @@ class ExtraImagesManager:
         self.edit_image_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
 
     def save_image_changes(self, image_id, selected_character_id, extra_images_frame, create_thumbnail):
-        """Save changes to an image's details."""
+        """Save changes to an image's details and rename the file if the name changes."""
         # Fetch updated data from the modal fields
         updated_image_name = self.edit_image_name_entry.get().strip()
         updated_image_note = self.edit_image_notes_textbox.get("1.0", "end").strip()
@@ -268,21 +268,46 @@ class ExtraImagesManager:
             return
 
         try:
-            # Check for duplicate image name (excluding the current image)
+            # Fetch the original image details
             connection = sqlite3.connect(self.db_path)
             cursor = connection.cursor()
             cursor.execute(
-                """
-                SELECT COUNT(*) 
-                FROM character_images 
-                WHERE image_name = ? AND character_id = ? AND id != ?
-                """,
-                (updated_image_name, selected_character_id, image_id)
+                "SELECT image_name, character_id FROM character_images WHERE id = ?",
+                (image_id,)
             )
-            if cursor.fetchone()[0] > 0:
-                self.show_message(f"Image name '{updated_image_name}' already exists for this character.", "error")
+            result = cursor.fetchone()
+
+            if not result:
+                self.show_message("Image not found.", "error")
                 connection.close()
                 return
+
+            original_image_name, character_id = result
+
+            # Fetch the character name
+            cursor.execute("SELECT name FROM characters WHERE id = ?", (character_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                self.show_message("Character folder not found.", "error")
+                connection.close()
+                return
+
+            character_name = result[0]
+            character_folder = os.path.join("CharacterCards", character_name, "ExtraImages")
+            original_file_path = os.path.join(character_folder, f"{original_image_name}.png")
+            updated_file_path = os.path.join(character_folder, f"{updated_image_name}.png")
+
+            # Rename the file if the name has changed
+            if original_image_name != updated_image_name:
+                if os.path.exists(original_file_path):
+                    os.rename(original_file_path, updated_file_path)
+                    print(f"Renamed file: {original_file_path} -> {updated_file_path}")
+                else:
+                    print(f"Original file not found: {original_file_path}")
+                    self.show_message("Original file not found. Unable to rename.", "error")
+                    connection.close()
+                    return
 
             # Update the database record
             query = """
@@ -325,33 +350,39 @@ class ExtraImagesManager:
             return  # Exit if the user cancels the deletion
 
         try:
+            # Fetch the image details
             connection = sqlite3.connect(self.db_path)
             cursor = connection.cursor()
 
-            # Fetch the image name and character ID
-            cursor.execute("SELECT image_name FROM character_images WHERE id = ?", (image_id,))
+            cursor.execute("SELECT image_name, character_id FROM character_images WHERE id = ?", (image_id,))
             result = cursor.fetchone()
 
             if not result:
                 self.show_message("Image not found.", "error")
+                connection.close()
                 return
 
-            image_name = result[0]
+            image_name, character_id = result
 
             # Fetch the character name
-            cursor.execute("SELECT name FROM characters WHERE id = ?", (selected_character_id,))
+            cursor.execute("SELECT name FROM characters WHERE id = ?", (character_id,))
             result = cursor.fetchone()
 
             if not result:
                 self.show_message("Character folder not found.", "error")
+                connection.close()
                 return
 
             character_name = result[0]
+            character_folder = os.path.join("CharacterCards", character_name, "ExtraImages")
+            image_path = os.path.join(character_folder, f"{image_name}.png")
 
             # Delete the image file
-            image_path = os.path.join("CharacterCards", character_name, "ExtraImages", image_name)
             if os.path.exists(image_path):
                 os.remove(image_path)
+                print(f"Deleted file: {image_path}")
+            else:
+                print(f"File not found: {image_path}")
 
             # Delete the database record
             cursor.execute("DELETE FROM character_images WHERE id = ?", (image_id,))
@@ -366,34 +397,8 @@ class ExtraImagesManager:
 
         except Exception as e:
             self.show_message(f"Failed to delete image: {str(e)}", "error")
+            print(f"Failed to delete image: {str(e)}")
 
-
-            """Delete an image from the character's folder and database."""
-            connection = sqlite3.connect(self.db_path)
-            cursor = connection.cursor()
-            cursor.execute("SELECT image_name, character_id FROM character_images WHERE id = ?", (image_id,))
-            result = cursor.fetchone()
-            if not result:
-                self.show_message("Image not found.", "error")
-                return
-
-            image_name, character_id = result
-            cursor.execute("SELECT name FROM characters WHERE id = ?", (character_id,))
-            result = cursor.fetchone()
-            if not result:
-                self.show_message("Character folder not found.", "error")
-                return
-
-            character_name = result[0]
-            image_path = os.path.join("CharacterCards", character_name, "ExtraImages", image_name)
-            if os.path.exists(image_path):
-                os.remove(image_path)
-
-            cursor.execute("DELETE FROM character_images WHERE id = ?", (image_id,))
-            connection.commit()
-            connection.close()
-
-            self.load_extra_images()
 
     def add_image_to_character(self):
         """Open a popup to add an image to the character."""
@@ -494,8 +499,8 @@ class ExtraImagesManager:
         window.update_idletasks()
         window_width = window.winfo_width()
         window_height = window.winfo_height()
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
+        screen_width = self.master.winfo_screenwidth()  # Use self.master for screen dimensions
+        screen_height = self.master.winfo_screenheight()  # Use self.master for screen dimensions
         position_top = int((screen_height / 2) - (window_height / 2))
         position_right = int((screen_width / 2) - (window_width / 2))
         window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")

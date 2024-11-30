@@ -1,24 +1,37 @@
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import os
+import re 
 import shutil
 import sqlite3
 from utils.db_manager import DatabaseManager
 from utils.file_handler import FileHandler
 from datetime import datetime
 from utils.extra_images import ExtraImagesManager
+from utils.settings import SettingsModal
+from utils.import_characters import ImportModal
+from utils.aicc_site_functions import AICCImporter
 
 class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("AI Character Card Manager")
         self.geometry("1200x700")
-        ctk.set_appearance_mode("System")  # Use system theme
-        ctk.set_default_color_theme("blue")  # Default color theme
+        ctk.set_appearance_mode("dark")  # Use system theme
+        ctk.set_default_color_theme("assets/AiCardVaultTheme.json")
 
         # Initialize database and file handler
         self.db_manager = DatabaseManager()
         self.file_handler = FileHandler()
+
+          # Load settings from the database
+        self.settings = {
+            "appearance_mode": self.db_manager.get_setting("appearance_mode", "dark"),
+            "sillytavern_path": self.db_manager.get_setting("sillytavern_path", ""),
+        }
+
+        # Apply appearance mode
+        ctk.set_appearance_mode(self.settings["appearance_mode"])
         
                 # Initialize ExtraImagesManager
         self.extra_images_manager = ExtraImagesManager(
@@ -39,6 +52,40 @@ class CharacterCardManagerApp(ctk.CTk):
         self.create_character_list()
         self.create_edit_panel()
 
+    def open_settings(self):
+        """Open the settings modal."""
+        settings_modal = SettingsModal(
+            parent=self,
+            db_manager=self.db_manager,
+            update_settings_callback=self.update_settings,
+        )
+        settings_modal.open()
+
+    def update_settings(self, updated_settings):
+        """Callback to update settings in the main application."""
+        self.settings.update(updated_settings)
+
+        # Persist settings in the database
+        self.db_manager.set_setting("appearance_mode", updated_settings["appearance_mode"])
+        self.db_manager.set_setting("sillytavern_path", updated_settings["sillytavern_path"])
+
+        # Apply appearance mode
+        ctk.set_appearance_mode(updated_settings["appearance_mode"])
+
+        print("Settings updated:", updated_settings)
+
+    def open_import_modal(self):
+        sillytavern_path = self.db_manager.get_setting("sillytavern_path", "")
+        if not sillytavern_path:
+            self.show_message("SillyTavern path not configured. Set it in Settings.", "error")
+            return
+
+        def refresh_character_list():
+            self.scrollable_frame.destroy()  # Destroy the old frame
+            self.create_character_list()    # Recreate the character list
+
+        import_modal = ImportModal(self, self.db_manager, sillytavern_path, refresh_character_list)
+        import_modal.open()
 
     def load_extra_images(self):
         """Delegate to ExtraImagesManager."""
@@ -58,11 +105,14 @@ class CharacterCardManagerApp(ctk.CTk):
         sidebar_label = ctk.CTkLabel(self.sidebar, text="Menu", font=ctk.CTkFont(size=18, weight="bold"))
         sidebar_label.pack(pady=10)
 
+        # Space for "Currently Selected Character"
+        self.selected_character_frame = None  # Will be created when a character is selected
+
         # Buttons in the sidebar
         self.add_character_button = ctk.CTkButton(self.sidebar, text="Add Character", command=self.add_character)
         self.add_character_button.pack(pady=10, padx=10, fill="x")
 
-        self.import_button = ctk.CTkButton(self.sidebar, text="Import Data", command=self.import_data)
+        self.import_button = ctk.CTkButton(self.sidebar, text="Import Cards From SillyTavern", command=self.open_import_modal)
         self.import_button.pack(pady=10, padx=10, fill="x")
 
         self.export_button = ctk.CTkButton(self.sidebar, text="Export Data", command=self.export_data)
@@ -71,6 +121,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.settings_button = ctk.CTkButton(self.sidebar, text="Settings", command=self.open_settings)
         self.settings_button.pack(pady=10, padx=10, fill="x")
 
+
     def create_character_list(self):
         """Create the middle column for the character list."""
         self.character_list_frame = ctk.CTkFrame(self)
@@ -78,16 +129,41 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Title
         list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
-        list_label.pack(pady=10)
+        list_label.pack(pady=(10, 0))
+
+        # Load and display all characters initially
+        self.all_characters = self.get_character_list()
+
+        # Card Count Label
+        self.card_count_label = ctk.CTkLabel(
+            self.character_list_frame,
+            text=f"Total Cards: {len(self.all_characters)}",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.card_count_label.pack(pady=(0, 5))
+
+        # Search bar
+        self.search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(
+            self.character_list_frame,
+            textvariable=self.search_var,
+            placeholder_text="Search characters...",
+            width=300,
+        )
+        search_entry.pack(pady=(10, 5), padx=10)
+
+        # Bind the search entry to the search function
+        self.search_var.trace_add("write", lambda *args: self.filter_character_list())
 
         # Scrollable Frame for Characters
         self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
         self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Load characters (Example: Replace with actual database data)
-        characters = self.get_character_list()
-        for char in characters:
-            self.add_character_to_list(char)
+        # Display characters
+        self.display_characters(self.all_characters)
+
+
 
     def get_character_list(self):
         """Retrieve the list of characters from the database."""
@@ -175,6 +251,38 @@ class CharacterCardManagerApp(ctk.CTk):
         for widget in widgets_to_bind:
             widget.bind("<Button-1>", lambda e, char=character: self.select_character(char))
 
+        # Update the card count label
+        self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
+
+    def filter_character_list(self):
+        """Filter the character list based on the search query."""
+        query = self.search_var.get().lower().strip()
+        if not query:
+            # If the search bar is empty, display all characters
+            self.display_characters(self.all_characters)
+        else:
+            # Preprocess the query by removing non-alphanumeric characters
+            processed_query = re.sub(r'\W+', '', query)  # Remove all non-alphanumeric characters
+            
+            # Filter characters by name
+            filtered_characters = [
+                char for char in self.all_characters
+                if processed_query in re.sub(r'\W+', '', char["name"].lower())
+            ]
+            self.display_characters(filtered_characters)
+            
+    def display_characters(self, characters):
+        """Display a list of characters in the scrollable frame."""
+        # Clear the current list
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        # Add filtered characters to the list
+        for char in characters:
+            self.add_character_to_list(char)
+
+        # Update the card count label
+        self.card_count_label.configure(text=f"Total Cards: {len(characters)}")
 
     def create_thumbnail(self, image_path):
         """Create a thumbnail for the character list using CTkImage."""
@@ -235,8 +343,9 @@ class CharacterCardManagerApp(ctk.CTk):
         self.delete_button = ctk.CTkButton(
             title_frame,
             text="Delete",
-            fg_color="red",
-            hover_color="darkred",
+            fg_color="#f37a21",
+            hover_color="#bc5c14",
+            width=50,
             command=self.confirm_delete_character,
         )
         self.delete_button.pack(side="right", padx=5)
@@ -257,16 +366,23 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Notes Tab
         notes_tab = tabview.add("Notes")
+            # Notes Section
+        self.notes_label = ctk.CTkLabel(notes_tab, text="Character Notes:", font=ctk.CTkFont(size=14, weight="bold"))
+        self.notes_label.pack(pady=(10, 5), padx=0, anchor="w")
+
         self.notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
-        self.notes_textbox.pack(fill="both", expand=True, padx=10, pady=5)
+        self.notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
+
+        self.misc_notes_label = ctk.CTkLabel(notes_tab, text="Miscellaneous Notes:", font=ctk.CTkFont(size=14, weight="bold"))
+        self.misc_notes_label.pack(pady=(10, 5), padx=5, anchor="w")
 
         self.misc_notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
-        self.misc_notes_textbox.pack(fill="both", expand=True, padx=10, pady=5)
+        self.misc_notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
 
         # Extra Images Tab
         images_tab = tabview.add("Extra Images")
         self.extra_images_frame = ctk.CTkScrollableFrame(images_tab, height=200)
-        self.extra_images_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.extra_images_frame.pack(fill="both", expand=True, padx=0, pady=5)
 
         self.add_image_button = ctk.CTkButton(
             images_tab,
@@ -369,27 +485,53 @@ class CharacterCardManagerApp(ctk.CTk):
                     widget.destroy()
                     print(f"Removed character ID: {character_id} from UI.")
                     return
+            # Update the card count label
+            self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
             print(f"Character ID: {character_id} not found in UI.")
         except Exception as e:
             print(f"Error removing character from list: {str(e)}")
 
     def clear_edit_panel(self):
         """Clear the edit panel fields."""
-        self.name_entry.delete(0, "end")
-        self.main_file_label.configure(text="Main File: ")
-        self.notes_textbox.delete("1.0", "end")
-        self.misc_notes_textbox.delete("1.0", "end")
-        self.created_date_label.configure(text="Created: ")
-        self.last_modified_date_label.configure(text="Last Modified: ")
-        self.selected_character_id = None
+        if hasattr(self, "name_entry") and self.name_entry.winfo_exists():
+            self.name_entry.delete(0, "end")
 
+        if hasattr(self, "main_file_label") and self.main_file_label.winfo_exists():
+            self.main_file_label.configure(text="Main File: ")
+
+        if hasattr(self, "notes_textbox") and self.notes_textbox.winfo_exists():
+            self.notes_textbox.delete("1.0", "end")
+
+        if hasattr(self, "misc_notes_textbox") and self.misc_notes_textbox.winfo_exists():
+            self.misc_notes_textbox.delete("1.0", "end")
+
+        if hasattr(self, "created_date_label") and self.created_date_label.winfo_exists():
+            self.created_date_label.configure(text="Created: ")
+
+        if hasattr(self, "last_modified_date_label") and self.last_modified_date_label.winfo_exists():
+            self.last_modified_date_label.configure(text="Last Modified: ")
+
+        self.selected_character_id = None
 
     def add_character(self):
         """Open a new window to add a character."""
-        # Create a modal window
+        # Create the modal window using CTkToplevel
         self.add_character_window = ctk.CTkToplevel(self)
         self.add_character_window.title("Add Character")
-        self.add_character_window.geometry("400x400")
+        self.add_character_window.geometry("400x500")
+
+        # API Import Section
+        api_frame = ctk.CTkFrame(self.add_character_window)
+        api_frame.pack(fill="x", pady=10, padx=10)
+
+        api_label = ctk.CTkLabel(api_frame, text="AICC Card ID:", anchor="w")
+        api_label.pack(side="left", padx=5)
+
+        self.card_id_entry = ctk.CTkEntry(api_frame, placeholder_text="e.g., AICC/aicharcards/the-game-master", width=240)
+        self.card_id_entry.pack(side="left", padx=5)
+
+        import_button = ctk.CTkButton(api_frame, text="Import", command=self.import_aicc_card)
+        import_button.pack(side="left", padx=5)
 
         # Ensure the modal stays on top of the main window
         self.add_character_window.transient(self)  # Set to be a child of the main window
@@ -407,7 +549,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.add_character_message_banner.pack_forget()  # Hide initially
 
         # File Upload Section
-        file_frame = ctk.CTkFrame(scrollable_frame)  # Create a frame for the row
+        file_frame = ctk.CTkFrame(scrollable_frame)
         file_frame.pack(fill="x", pady=10, padx=10, anchor="w")
 
         file_label = ctk.CTkLabel(file_frame, text="Upload File:", anchor="w")
@@ -420,7 +562,7 @@ class CharacterCardManagerApp(ctk.CTk):
         browse_button.pack(side="left", padx=5)
 
         # Character Name Section
-        name_frame = ctk.CTkFrame(scrollable_frame)  # Create a frame for the row
+        name_frame = ctk.CTkFrame(scrollable_frame)
         name_frame.pack(fill="x", pady=5, padx=10)
 
         name_label = ctk.CTkLabel(name_frame, text="Character Name:", anchor="w")
@@ -441,6 +583,15 @@ class CharacterCardManagerApp(ctk.CTk):
         self.misc_notes_textbox = ctk.CTkTextbox(scrollable_frame, height=100)
         self.misc_notes_textbox.pack(pady=0, padx=10, fill="x")
 
+        # Automatically add to SillyTavern Checkbox (hidden initially)
+        self.auto_add_checkbox = ctk.CTkCheckBox(
+            scrollable_frame,
+            text="Automatically add card to SillyTavern?",
+            state="disabled"
+        )
+        self.auto_add_checkbox.pack(pady=10, padx=10, anchor="w")
+        self.auto_add_checkbox.pack_forget()  # Hide initially
+
         # Submit Button
         submit_button = ctk.CTkButton(scrollable_frame, text="Add Character", command=self.save_character_with_message)
         submit_button.pack(pady=5, padx=10, anchor="w")
@@ -454,6 +605,31 @@ class CharacterCardManagerApp(ctk.CTk):
         position_top = int((screen_height / 2) - (window_height / 2))
         position_right = int((screen_width / 2) - (window_width / 2))
         self.add_character_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
+
+    def import_aicc_card(self):
+        card_id = self.card_id_entry.get().strip()
+        if not card_id:
+            self.show_add_character_message("Please enter a valid Card ID.", "error")
+            return
+
+        try:
+            downloaded_file = AICCImporter.fetch_card(card_id)
+            # Populate the name field with the card's name
+            character_name = os.path.splitext(os.path.basename(downloaded_file))[0]
+            self.character_name_entry.delete(0, "end")
+            self.character_name_entry.insert(0, character_name)
+            self.file_path_entry.delete(0, "end")
+            self.file_path_entry.insert(0, downloaded_file)
+            
+            # Show success message
+            self.show_add_character_message("Card imported successfully.", "success")
+            
+            # Enable and show the "Automatically add card to SillyTavern" checkbox
+            self.auto_add_checkbox.configure(state="normal")
+            self.auto_add_checkbox.pack()
+
+        except Exception as e:
+            self.show_add_character_message(f"Error importing card: {str(e)}", "error")
 
 
     def show_add_character_message(self, message, message_type="error"):
@@ -489,53 +665,89 @@ class CharacterCardManagerApp(ctk.CTk):
     def export_data(self):
         print("Export Data clicked")
 
-    def open_settings(self):
-        print("Settings clicked")
-
     def select_character(self, character):
         """Handle character selection and populate the edit panel."""
-        # Fetch all fields from the database for the selected character
-        connection = sqlite3.connect(self.db_manager.db_path)
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT id, name, main_file, notes, misc_notes, created_date, last_modified_date 
-            FROM characters WHERE name = ?
-            """,
-            (character["name"],)
-        )
-        result = cursor.fetchone()
-        connection.close()
+        try:
+            # Fetch character data from the database
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT id, name, main_file, notes, misc_notes, created_date, last_modified_date 
+                FROM characters WHERE name = ?
+                """,
+                (character["name"],)
+            )
+            result = cursor.fetchone()
+            connection.close()
 
-        if result:
-            # Store the ID of the selected character
-            self.selected_character_id = result[0]  # Save the ID for later updates
-            print(f"Selected character ID: {self.selected_character_id}")  # Debugging
-            name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
+            if result:
+                # Store the ID of the selected character
+                self.selected_character_id = result[0]
+                name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
 
-            # Ensure the misc_notes_textbox exists and can be updated
-            if hasattr(self, 'misc_notes_textbox') and self.misc_notes_textbox.winfo_exists():
+                # Safely update the edit panel
+                self.name_entry.delete(0, "end")
+                self.name_entry.insert(0, name)
+
+                self.main_file_label.configure(text=f"Main File: {main_file}")
+
+                self.notes_textbox.delete("1.0", "end")
+                self.notes_textbox.insert("1.0", notes or "")
+
                 self.misc_notes_textbox.delete("1.0", "end")
-                self.misc_notes_textbox.insert("1.0", misc_notes)
-            else:
-                print("Error: misc_notes_textbox does not exist.")
+                self.misc_notes_textbox.insert("1.0", misc_notes or "")
 
-            # Populate other fields in the edit panel
-            self.name_entry.delete(0, "end")
-            self.name_entry.insert(0, name)
+                self.created_date_label.configure(
+                    text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+                )
+                self.last_modified_date_label.configure(
+                    text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+                )
 
-            self.main_file_label.configure(text=f"Main File: {main_file}")
-            self.notes_textbox.delete("1.0", "end")
-            self.notes_textbox.insert("1.0", notes)
-            self.created_date_label.configure(
-                text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-            )
-            self.last_modified_date_label.configure(
-                text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-            )
+        except Exception as e:
+            print(f"Error in select_character: {e}")
 
-            # Load extra images for the selected character
-            self.load_extra_images()
+    def update_currently_selected_character(self, character_name, image_path):
+        """Update the sidebar with the currently selected character."""
+        # Ensure the frame exists
+        if self.selected_character_frame is None:
+            self.selected_character_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent", width=200)
+            self.selected_character_frame.pack(pady=10, padx=0, fill="x")
+
+        # Clear any previous content in the frame
+        for widget in self.selected_character_frame.winfo_children():
+            widget.destroy()
+
+        # Add title label
+        title_label = ctk.CTkLabel(self.selected_character_frame, text="Currently Selected Character",
+                                font=ctk.CTkFont(size=14, weight="bold"))
+        title_label.pack(pady=(0, 5))
+
+        # Add character name label
+        name_label = ctk.CTkLabel(self.selected_character_frame, text=character_name, font=ctk.CTkFont(size=16, weight="bold"))
+        name_label.pack(pady=(0, 10))
+
+        # Add character image
+        try:
+            img = Image.open(image_path)
+            img_width, img_height = img.size
+
+            # Scale the image to fit within the fixed width of the sidebar
+            max_width = 200
+            scale_factor = max_width / img_width
+            new_height = int(img_height * scale_factor)
+
+            resized_img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            ctk_image = ctk.CTkImage(resized_img, size=(max_width, new_height))
+        except Exception:
+            # Use default image if loading fails
+            ctk_image = ctk.CTkImage(Image.open("assets/default_thumbnail.png"), size=(200, int(200 * 1.5)))
+
+        image_label = ctk.CTkLabel(self.selected_character_frame, image=ctk_image, text="")
+        image_label.image = ctk_image  # Keep a reference to avoid garbage collection
+        image_label.pack()
+
 
 
     def save_changes(self):
@@ -622,42 +834,51 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def select_character_by_id(self, character_id):
         """Handle character selection by ID and populate the edit panel."""
-        # Fetch all fields from the database for the selected character
-        connection = sqlite3.connect(self.db_manager.db_path)
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT id, name, main_file, notes, misc_notes, created_date, last_modified_date 
-            FROM characters WHERE id = ?
-            """,
-            (character_id,),
-        )
-        result = cursor.fetchone()
-        connection.close()
-
-        if result:
-            # Store the ID of the selected character
-            self.selected_character_id = result[0]  # Save the ID for later updates
-            name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
-
-            # Populate the fields in the edit panel
-            self.name_entry.delete(0, "end")
-            self.name_entry.insert(0, name)
-
-            self.main_file_label.configure(text=f"Main File: {main_file}")
-            self.notes_textbox.delete("1.0", "end")
-            self.notes_textbox.insert("1.0", notes)
-            self.misc_notes_textbox.delete("1.0", "end")
-            self.misc_notes_textbox.insert("1.0", misc_notes)
-            self.created_date_label.configure(
-                text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+        try:
+            # Fetch all fields from the database for the selected character
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT id, name, main_file, notes, misc_notes, created_date, last_modified_date 
+                FROM characters WHERE id = ?
+                """,
+                (character_id,),
             )
-            self.last_modified_date_label.configure(
-                text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
-            )
+            result = cursor.fetchone()
+            connection.close()
 
-            # Load extra images for the selected character
-            self.load_extra_images()
+            if result:
+                # Store the ID of the selected character
+                self.selected_character_id = result[0]  # Save the ID for later updates
+                name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
+
+                # Handle None values
+                notes = notes or ""
+                misc_notes = misc_notes or ""
+
+                # Populate the fields in the edit panel
+                self.name_entry.delete(0, "end")
+                self.name_entry.insert(0, name)
+
+                self.main_file_label.configure(text=f"Main File: {main_file}")
+                self.notes_textbox.delete("1.0", "end")
+                self.notes_textbox.insert("1.0", notes)
+
+                self.misc_notes_textbox.delete("1.0", "end")
+                self.misc_notes_textbox.insert("1.0", misc_notes)
+
+                self.created_date_label.configure(
+                    text=f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+                )
+                self.last_modified_date_label.configure(
+                    text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
+                )
+
+        except Exception as e:
+            print(f"Error in select_character_by_id: {e}")
+
+
 
 
     def update_character_list(self, character_id, character_name, last_modified_date):
@@ -694,17 +915,19 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def save_character_with_message(self):
         """Save the character to the database and filesystem, with messages."""
-        file_path = self.file_path_entry.get()
+        file_path = self.file_path_entry.get().strip()  # File browser path
         character_name = self.character_name_entry.get().strip()
         character_notes = self.character_notes_textbox.get("1.0", "end").strip()
         misc_notes = self.misc_notes_textbox.get("1.0", "end").strip()
 
-        # Validate input
-        if not file_path:
-            self.show_add_character_message("Please select a file.", "error")
-            return
+        # Validate character name
         if not character_name:
             self.show_add_character_message("Please provide a character name.", "error")
+            return
+
+        # Validate that either a file or an imported PNG exists
+        if not file_path and not hasattr(self, "imported_png_path"):
+            self.show_add_character_message("Please select a file or import a card via the API.", "error")
             return
 
         # Check for duplicate character name
@@ -716,46 +939,61 @@ class CharacterCardManagerApp(ctk.CTk):
             connection.close()
             return
 
-        # Save file to directory
+        # Create the character directory
         character_dir = os.path.join("CharacterCards", character_name)
         os.makedirs(character_dir, exist_ok=True)
-        try:
-            shutil.copy(file_path, character_dir)
-        except Exception as e:
-            self.show_add_character_message(f"File save error: {str(e)}", "error")
-            return
 
-        # Generate timestamps
-        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        last_modified_date = created_date
-
-        # Add to database
         try:
+            # Handle file from the file browser
+            if file_path:
+                shutil.copy(file_path, character_dir)
+                final_file_path = os.path.join(character_dir, os.path.basename(file_path))
+
+            # Handle imported PNG via API
+            elif hasattr(self, "imported_png_path") and os.path.exists(self.imported_png_path):
+                final_file_path = os.path.join(character_dir, f"{character_name}.png")
+                shutil.move(self.imported_png_path, final_file_path)
+                del self.imported_png_path  # Clean up the attribute after use
+
+            else:
+                raise ValueError("No valid file found for saving.")
+
+            # Copy the PNG to SillyTavern path if the checkbox is selected
+            if self.auto_add_checkbox.get() and self.settings["sillytavern_path"]:
+                sillytavern_characters_path = os.path.join(self.settings["sillytavern_path"], "characters")
+                os.makedirs(sillytavern_characters_path, exist_ok=True)
+                shutil.copy(final_file_path, sillytavern_characters_path)
+                print(f"Copied {final_file_path} to SillyTavern characters directory.")
+
+            # Generate timestamps
+            created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            last_modified_date = created_date
+
+            # Add character data to the database
             cursor.execute(
                 """INSERT INTO characters 
                 (name, main_file, notes, misc_notes, created_date, last_modified_date) 
                 VALUES (?, ?, ?, ?, ?, ?)""",
-                (character_name, os.path.basename(file_path), character_notes, misc_notes, created_date, last_modified_date),
+                (character_name, os.path.basename(final_file_path), character_notes, misc_notes, created_date, last_modified_date),
             )
             connection.commit()
             connection.close()
+
+            # Update the character list in the UI
+            self.add_character_to_list({
+                "id": cursor.lastrowid,
+                "name": character_name,
+                "image_path": final_file_path,
+                "created_date": created_date,
+                "last_modified_date": last_modified_date,
+            })
+
+            # Show success message and close the modal
+            self.show_add_character_message("Character added successfully!", "success")
+            self.add_character_window.after(1500, self.add_character_window.destroy())
+
         except Exception as e:
-            self.show_add_character_message(f"Database error: {str(e)}", "error")
-            return
-
-        # Immediately update the character list
-        self.add_character_to_list({
-            "id": cursor.lastrowid,
-            "name": character_name,
-            "image_path": os.path.join(character_dir, os.path.basename(file_path)),
-            "created_date": created_date,
-            "last_modified_date": last_modified_date,
-        })
-
-        # Show success message and close the modal after a short delay
-        self.show_add_character_message("Character added successfully.", "success")
-        self.add_character_window.after(1500, self.add_character_window.destroy)
-
+            self.show_add_character_message(f"Error saving character: {str(e)}", "error")
 
 
     def show_message(self, message, message_type="error"):

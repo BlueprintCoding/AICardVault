@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from datetime import datetime
 
 class DatabaseManager:
     def __init__(self):
@@ -53,5 +54,51 @@ class DatabaseManager:
         )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+        connection.commit()
+        connection.close()
+
+    def get_setting(self, key, default=None):
+        """Retrieve a setting from the database."""
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        result = cursor.fetchone()
+        connection.close()
+        return result[0] if result else default
+
+    def set_setting(self, key, value):
+        """Set or update a setting in the database."""
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (key, value))
+        connection.commit()
+        connection.close()
+
+    def add_character_to_db(self, name, main_file):
+        """Add a new character to the database."""
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+
+        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        last_modified_date = created_date
+
+        cursor.execute(
+            """
+            INSERT INTO characters (name, main_file, created_date, last_modified_date)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, main_file, created_date, last_modified_date)
+        )
         connection.commit()
         connection.close()
