@@ -15,7 +15,7 @@ from utils.aicc_site_functions import AICCImporter
 class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI Character Card Manager")
+        self.title("AI Card Vault")
         self.geometry("1200x700")
         ctk.set_appearance_mode("dark")  # Use system theme
         ctk.set_default_color_theme("assets/AiCardVaultTheme.json")
@@ -189,7 +189,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def add_character_to_list(self, character):
         """Add a character entry to the list with a thumbnail image."""
-        char_frame = ctk.CTkFrame(self.scrollable_frame, corner_radius=5)
+        char_frame = ctk.CTkFrame(self.scrollable_frame, corner_radius=5, border_width=0, border_color="")
         char_frame.character_id = character["id"]  # Assign the character ID
         char_frame.character_name = character["name"]  # Assign the character name
         char_frame.pack(pady=5, padx=5, fill="x")
@@ -214,7 +214,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Character Name Label
         name_label = ctk.CTkLabel(char_frame, text=character["name"], anchor="w", font=ctk.CTkFont(size=14, weight="bold"))
-        name_label.grid(row=0, column=1, sticky="w", padx=5)
+        name_label.grid(row=0, column=1, sticky="w", pady=2, padx=5)
 
         # Created Date Label
         created_date_label = ctk.CTkLabel(char_frame, text=f"Created: {formatted_created_date}", anchor="w", font=ctk.CTkFont(size=12))
@@ -222,7 +222,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Last Modified Date Label
         modified_date_label = ctk.CTkLabel(char_frame, text=f"Last Modified: {formatted_last_modified_date}", anchor="w", font=ctk.CTkFont(size=12))
-        modified_date_label.grid(row=2, column=1, sticky="w", padx=5)
+        modified_date_label.grid(row=2, column=1, sticky="w", pady=(0,2), padx=5)
 
         # Bind click events to `select_character_by_id`
         widgets_to_bind = [char_frame, thumbnail_label, name_label, created_date_label, modified_date_label]
@@ -368,6 +368,35 @@ class CharacterCardManagerApp(ctk.CTk):
             command=self.extra_images_manager.add_image_to_character
         )
         self.add_image_button.pack(pady=5, padx=10)
+
+        # Related Characters Tab
+        related_tab = tabview.add("Related Characters")
+
+        # Search Bar for Related Characters
+        self.related_search_var = ctk.StringVar()
+        related_search_entry = ctk.CTkEntry(
+            related_tab,
+            textvariable=self.related_search_var,
+            placeholder_text="Search characters...",
+            width=300,
+        )
+        related_search_entry.pack(pady=(10, 5), padx=10)
+
+        # Bind search bar to filter function
+        self.related_search_var.trace_add("write", lambda *args: self.filter_related_characters())
+
+        # Scrollable Frame for Related Characters List
+        self.related_characters_frame = ctk.CTkScrollableFrame(related_tab, height=200)
+        self.related_characters_frame.pack(fill="both", expand=True, padx=0, pady=5)
+
+        # Add Button for Linking a Character
+        self.add_related_character_button = ctk.CTkButton(
+            related_tab,
+            text="Link Character",
+            command=self.open_link_character_modal
+        )
+        self.add_related_character_button.pack(pady=5, padx=10)
+
 
         # Metadata Tab
         metadata_tab = tabview.add("MetaData")
@@ -546,20 +575,20 @@ class CharacterCardManagerApp(ctk.CTk):
         name_label = ctk.CTkLabel(name_frame, text="Character Name:", anchor="w")
         name_label.pack(side="left", padx=5)
 
-        self.character_name_entry = ctk.CTkEntry(name_frame, placeholder_text="Default: File Name", width=240)
-        self.character_name_entry.pack(side="left", padx=5)
+        self.add_character_name_entry = ctk.CTkEntry(name_frame, placeholder_text="Default: File Name", width=240)
+        self.add_character_name_entry.pack(side="left", padx=5)
 
         # Character Notes
         notes_label = ctk.CTkLabel(scrollable_frame, text="Character Notes:", anchor="w")
         notes_label.pack(pady=10, padx=10, anchor="w")
-        self.character_notes_textbox = ctk.CTkTextbox(scrollable_frame, height=100)
-        self.character_notes_textbox.pack(pady=0, padx=10, fill="x")
+        self.add_character_notes_textbox = ctk.CTkTextbox(scrollable_frame, height=100)
+        self.add_character_notes_textbox.pack(pady=0, padx=10, fill="x")
 
         # Miscellaneous Notes
         misc_notes_label = ctk.CTkLabel(scrollable_frame, text="Miscellaneous Notes:", anchor="w")
         misc_notes_label.pack(pady=10, padx=10, anchor="w")
-        self.misc_notes_textbox = ctk.CTkTextbox(scrollable_frame, height=100)
-        self.misc_notes_textbox.pack(pady=0, padx=10, fill="x")
+        self.add_misc_notes_textbox = ctk.CTkTextbox(scrollable_frame, height=100)
+        self.add_misc_notes_textbox.pack(pady=0, padx=10, fill="x")
 
         # Automatically add to SillyTavern Checkbox (hidden initially)
         self.auto_add_checkbox = ctk.CTkCheckBox(
@@ -630,8 +659,8 @@ class CharacterCardManagerApp(ctk.CTk):
 
             # Default character name to file name
             default_name = os.path.splitext(os.path.basename(file_path))[0]
-            self.character_name_entry.delete(0, "end")
-            self.character_name_entry.insert(0, default_name)
+            self.add_character_name_entry.delete(0, "end")
+            self.add_character_name_entry.insert(0, default_name)
 
 
     def export_data(self):
@@ -661,18 +690,19 @@ class CharacterCardManagerApp(ctk.CTk):
         # Add character image
         try:
             img = Image.open(image_path)
-            img_width, img_height = img.size
 
-            # Scale the image to fit within the fixed width of the sidebar
+            # Resize to fit within sidebar
             max_width = 200
-            scale_factor = max_width / img_width
-            new_height = int(img_height * scale_factor)
+            aspect_ratio = img.width / img.height
+            new_height = int(max_width / aspect_ratio)
 
-            resized_img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-            ctk_image = ctk.CTkImage(resized_img, size=(max_width, new_height))
-        except Exception:
-            # Use default image if loading fails
-            ctk_image = ctk.CTkImage(Image.open("assets/default_thumbnail.png"), size=(200, int(200 * 1.5)))
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            ctk_image = ctk.CTkImage(img, size=(max_width, new_height))
+        except Exception as e:
+            print(f"Error loading character image: {e}")
+            # Use a default image in case of error
+            default_image_path = "assets/default_thumbnail.png"
+            ctk_image = ctk.CTkImage(Image.open(default_image_path), size=(200, 300))
 
         image_label = ctk.CTkLabel(self.selected_character_frame, image=ctk_image, text="")
         image_label.image = ctk_image  # Keep a reference to avoid garbage collection
@@ -715,32 +745,6 @@ class CharacterCardManagerApp(ctk.CTk):
             # Debugging: Print the ID being updated
             print(f"Updating character ID: {self.selected_character_id}")
 
-            # Get old folder path from the database
-            connection = sqlite3.connect(self.db_manager.db_path)
-            cursor = connection.cursor()
-            cursor.execute(
-                "SELECT name, main_file FROM characters WHERE id = ?",
-                (self.selected_character_id,)
-            )
-            result = cursor.fetchone()
-            connection.close()
-
-            if not result:
-                self.show_message("Original character data not found.", "error")
-                return
-
-            old_name, old_main_file = result
-            old_folder_path = os.path.join("CharacterCards", old_name)
-            new_folder_path = os.path.join("CharacterCards", character_name)
-
-            # Update the folder name on the filesystem if the name changes
-            if old_folder_path != new_folder_path:
-                if os.path.exists(old_folder_path):
-                    os.rename(old_folder_path, new_folder_path)
-                else:
-                    self.show_message("Character folder not found. Unable to rename.", "error")
-                    return
-
             # Update the database record
             connection = sqlite3.connect(self.db_manager.db_path)
             cursor = connection.cursor()
@@ -763,8 +767,10 @@ class CharacterCardManagerApp(ctk.CTk):
         except Exception as e:
             self.show_message(f"Failed to save changes: {str(e)}", "error")
 
+
     def select_character_by_id(self, character_id):
         """Handle character selection by ID and populate the edit panel."""
+        print(character_id)
         try:
             # Fetch character details from the database
             connection = sqlite3.connect(self.db_manager.db_path)
@@ -788,15 +794,72 @@ class CharacterCardManagerApp(ctk.CTk):
                 notes = notes or ""
                 misc_notes = misc_notes or ""
 
-                # Safely update the edit panel fields
-                self.update_edit_panel(
-                    name=name,
-                    main_file=main_file,
-                    notes=notes,
-                    misc_notes=misc_notes,
-                    created_date=created_date,
-                    last_modified_date=last_modified_date,
+                # Debugging: Print fetched values
+                # print(name)
+                # print(notes)
+                # print(misc_notes)
+                # print(created_date)
+                # print(last_modified_date)
+                # print(main_file)
+
+                # Unified UI update
+                fields_to_update = {
+                    "name_entry": (name, "entry"),
+                    "main_file_label": (f"Main File: {main_file}", "label"),
+                    "notes_textbox": (notes, "textbox"),
+                    "misc_notes_textbox": (misc_notes, "textbox"),
+                    "created_date_label": (
+                        f"Created: {datetime.strptime(created_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}",
+                        "label",
+                    ),
+                    "last_modified_date_label": (
+                        f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}",
+                        "label",
+                    ),
+                }
+
+                for field_name, (value, field_type) in fields_to_update.items():
+                    if hasattr(self, field_name):
+                        field = getattr(self, field_name)
+                        if field.winfo_exists():
+                            if field_type == "entry":
+                                field.delete(0, "end")
+                                field.insert(0, value)
+                            elif field_type == "label":
+                                field.configure(text=value)
+                            elif field_type == "textbox":
+                                field.delete("1.0", "end")
+                                field.insert("1.0", value)
+                            field.update_idletasks()  # Force the UI to refresh
+                        else:
+                            print(f"{field_name} does not exist or is not accessible.")
+                    else:
+                        print(f"{field_name} is not a valid attribute.")
+
+                # Load extra images for the selected character
+                self.extra_images_manager.load_extra_images(
+                    self.selected_character_id,
+                    self.extra_images_frame,
+                    self.create_thumbnail
                 )
+
+                self.load_related_characters()
+
+                # Update the currently selected character in the sidebar
+                image_path = os.path.join("CharacterCards", name, main_file) if main_file else "assets/default_thumbnail.png"
+                self.update_currently_selected_character(name, image_path)
+
+                # Highlight the selected character in the list
+                self.highlight_selected_character(character_id)
+
+                # Set the tabview to the "Notes" tab
+                if hasattr(self, "edit_panel"):
+                    for widget in self.edit_panel.winfo_children():
+                        if isinstance(widget, ctk.CTkTabview):
+                            widget.set("Notes")  # Set the active tab to "Notes"
+                            break
+
+
             else:
                 # Handle case where the character does not exist
                 self.clear_edit_panel()
@@ -804,6 +867,25 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             print(f"Error in select_character_by_id: {e}")
+
+
+    def highlight_selected_character(self, selected_id):
+        """Highlight the selected character in the list with a light purple border."""
+        for widget in self.scrollable_frame.winfo_children():
+            if hasattr(widget, "character_id"):
+                if widget.character_id == selected_id:
+                    # Apply the light purple border to the selected character
+                    widget.configure(border_color="#D8BFD8", border_width=2)  # Light purple border
+
+                    widget.configure(fg_color="#D8BFD8")  # Light purple background
+
+                    # Schedule a return to the original color after 2 seconds
+                    self.after(100, lambda w=widget: w.configure(fg_color="transparent"))
+                else:
+                    # Reset the border for unselected characters
+                    widget.configure(border_color="", border_width=0)
+
+
 
     def update_edit_panel(self, name, main_file, notes, misc_notes, created_date, last_modified_date):
         """Update the edit panel fields."""
@@ -824,7 +906,7 @@ class CharacterCardManagerApp(ctk.CTk):
         # Update miscellaneous notes
         if self.misc_notes_textbox.winfo_exists():
             self.misc_notes_textbox.delete("1.0", "end")  # Clear previous data
-            self.misc_notes_textbox.insert("1.0", misc_notes)
+            self.misc_notes_textbox.insert("1.0", misc_notes)  # Set misc_notes correctly
 
         # Update created and modified dates
         if self.created_date_label.winfo_exists():
@@ -836,6 +918,7 @@ class CharacterCardManagerApp(ctk.CTk):
             self.last_modified_date_label.configure(
                 text=f"Last Modified: {datetime.strptime(last_modified_date, '%Y-%m-%d %H:%M:%S').strftime('%m/%d/%Y %I:%M %p')}"
             )
+
 
     def format_date(self, date_string):
         """Format a date string for display."""
@@ -881,9 +964,9 @@ class CharacterCardManagerApp(ctk.CTk):
     def save_character_with_message(self):
         """Save the character to the database and filesystem, with messages."""
         file_path = self.file_path_entry.get().strip()  # File browser path
-        character_name = self.character_name_entry.get().strip()
-        character_notes = self.character_notes_textbox.get("1.0", "end").strip()
-        misc_notes = self.misc_notes_textbox.get("1.0", "end").strip()
+        character_name = self.add_character_name_entry.get().strip()
+        character_notes = self.add_character_notes_textbox.get("1.0", "end").strip()
+        misc_notes = self.add_misc_notes_textbox.get("1.0", "end").strip()
 
         # Validate character name
         if not character_name:
@@ -990,6 +1073,205 @@ class CharacterCardManagerApp(ctk.CTk):
         connection.close()
         return result[0] if result else "Unknown"
     
+
+    def filter_related_characters(self):
+        """Filter the list of related characters based on the search query."""
+        query = self.related_search_var.get().lower().strip()
+        if not query:
+            # Display all related characters if no query
+            self.display_related_characters()
+        else:
+            # Filter related characters
+            filtered = [
+                char for char in self.related_characters
+                if query in char["name"].lower()
+            ]
+            self.display_related_characters(filtered)
+
+    def display_related_characters(self, characters=None):
+        """Display the related characters in the scrollable frame."""
+        characters = characters or self.related_characters
+
+        # Clear current display
+        for widget in self.related_characters_frame.winfo_children():
+            widget.destroy()
+
+        for char in characters:
+            char_frame = ctk.CTkFrame(self.related_characters_frame, corner_radius=5)
+            char_frame.pack(pady=5, padx=5, fill="x")
+
+            # Thumbnail
+            thumbnail = self.create_thumbnail(char["image_path"])
+            thumbnail_label = ctk.CTkLabel(char_frame, image=thumbnail, text="")
+            thumbnail_label.image = thumbnail  # Prevent garbage collection
+            thumbnail_label.grid(row=0, column=0, padx=5)
+
+            # Character Name
+            name_label = ctk.CTkLabel(char_frame, text=char["name"], anchor="w", font=ctk.CTkFont(size=12, weight="bold"))
+            name_label.grid(row=0, column=1, sticky="w", padx=5)
+
+            # Jump to Character Button
+            jump_button = ctk.CTkButton(
+                char_frame,
+                text="Select",
+                command=lambda char_id=char["id"]: self.select_character_by_id(char_id),
+            )
+            jump_button.grid(row=0, column=2, padx=5)
+
+            # Unlink Button
+            unlink_button = ctk.CTkButton(
+                char_frame,
+                text="X",
+                fg_color="red",
+                command=lambda char_id=char["id"]: self.unlink_character(char_id),
+            )
+            unlink_button.grid(row=0, column=3, padx=5)
+
+
+    def load_related_characters(self):
+        """Load related characters for the selected character."""
+        if not hasattr(self, "selected_character_id"):
+            self.related_characters = []
+            return
+
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT c.id, c.name, c.main_file
+            FROM characters c
+            JOIN character_relationships r ON c.id = r.related_character_id
+            WHERE r.character_id = ?
+        """, (self.selected_character_id,))
+        rows = cursor.fetchall()
+        connection.close()
+
+        # Process characters into a usable format
+        self.related_characters = [
+            {
+                "id": row[0],
+                "name": row[1],
+                "image_path": os.path.join("CharacterCards", row[1], row[2])
+            }
+            for row in rows
+        ]
+
+        # Display the related characters
+        self.display_related_characters()
+
+    def open_link_character_modal(self):
+        """Open a modal to search and link a new character."""
+        modal = ctk.CTkToplevel(self)
+        modal.title("Link Character")
+        modal.geometry("400x400")
+
+        search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(modal, textvariable=search_var, placeholder_text="Search characters...", width=300)
+        search_entry.pack(pady=(10, 5), padx=10)
+
+        # Scrollable Frame for Character List
+        scrollable_frame = ctk.CTkScrollableFrame(modal, height=300)
+        scrollable_frame.pack(fill="both", expand=True, padx=0, pady=5)
+
+        def filter_and_display():
+            query = search_var.get().lower().strip()
+            characters = self.get_character_list()
+            # Exclude the currently selected character
+            characters = [char for char in characters if char["id"] != self.selected_character_id]
+            if query:
+                characters = [char for char in characters if query in char["name"].lower()]
+            for widget in scrollable_frame.winfo_children():
+                widget.destroy()
+            for char in characters:
+                char_frame = ctk.CTkFrame(scrollable_frame, corner_radius=5)
+                char_frame.pack(pady=5, padx=5, fill="x")
+
+                # Thumbnail
+                thumbnail = self.create_thumbnail(char["image_path"])
+                thumbnail_label = ctk.CTkLabel(char_frame, image=thumbnail, text="")
+                thumbnail_label.image = thumbnail
+                thumbnail_label.grid(row=0, column=0, padx=5)
+
+                # Character Name
+                name_label = ctk.CTkLabel(char_frame, text=char["name"], anchor="w", font=ctk.CTkFont(size=12, weight="bold"))
+                name_label.grid(row=0, column=1, sticky="w", padx=5)
+
+                # Link Button
+                link_button = ctk.CTkButton(
+                    char_frame,
+                    text="Link",
+                    command=lambda char_id=char["id"]: self.link_character(char_id, modal),
+                )
+                link_button.grid(row=0, column=2, padx=5)
+
+        search_var.trace_add("write", lambda *args: filter_and_display())
+        filter_and_display()
+
+    def link_character(self, related_character_id, modal):
+        """Link a character to the currently selected character."""
+        if not hasattr(self, "selected_character_id"):
+            self.show_message("No character selected to link.", "error")
+            return
+
+        try:
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+
+            # Ensure the characters aren't already linked
+            cursor.execute("""
+                SELECT COUNT(*) FROM character_relationships 
+                WHERE (character_id = ? AND related_character_id = ?)
+                OR (character_id = ? AND related_character_id = ?)
+            """, (self.selected_character_id, related_character_id,
+                related_character_id, self.selected_character_id))
+            if cursor.fetchone()[0] > 0:
+                self.show_message("These characters are already linked.", "error")
+                connection.close()
+                return
+
+            # Insert bi-directional relationships
+            cursor.execute("""
+                INSERT INTO character_relationships (character_id, related_character_id)
+                VALUES (?, ?)
+            """, (self.selected_character_id, related_character_id))
+            cursor.execute("""
+                INSERT INTO character_relationships (character_id, related_character_id)
+                VALUES (?, ?)
+            """, (related_character_id, self.selected_character_id))
+            connection.commit()
+            connection.close()
+
+            # Refresh related characters
+            self.load_related_characters()
+            modal.destroy()
+            self.show_message("Character linked successfully.", "success")
+
+        except Exception as e:
+            self.show_message(f"Failed to link character: {e}", "error")
+
+    def unlink_character(self, related_character_id):
+        """Unlink a related character."""
+        try:
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+
+            # Delete relationships in both directions
+            cursor.execute("""
+                DELETE FROM character_relationships 
+                WHERE (character_id = ? AND related_character_id = ?)
+                OR (character_id = ? AND related_character_id = ?)
+            """, (self.selected_character_id, related_character_id,
+                related_character_id, self.selected_character_id))
+            connection.commit()
+            connection.close()
+
+            # Refresh related characters
+            self.load_related_characters()
+            self.show_message("Character unlinked successfully.", "success")
+
+        except Exception as e:
+            self.show_message(f"Failed to unlink character: {e}", "error")
+
+
 
 if __name__ == "__main__":
     app = CharacterCardManagerApp()

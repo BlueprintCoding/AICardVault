@@ -17,6 +17,7 @@ class ExtraImagesManager:
     def load_extra_images(self, selected_character_id, extra_images_frame, create_thumbnail):
         """Load and display extra images for the selected character."""
         if not selected_character_id:
+            print("No character selected for loading extra images.")
             return
 
         # Clear current images
@@ -32,6 +33,10 @@ class ExtraImagesManager:
         )
         images = cursor.fetchall()
         connection.close()
+
+        if not images:
+            print("No extra images found for the selected character.")
+            return
 
         for img_id, image_name, image_note, created_date, last_modified_date in images:
             frame = ctk.CTkFrame(extra_images_frame)
@@ -76,18 +81,17 @@ class ExtraImagesManager:
             )
             modified_label.grid(row=3, column=1, sticky="w", padx=5)
 
-              # Edit Button
+            # Edit and Delete Buttons
             edit_button = ctk.CTkButton(
                 frame,
                 text="View/Edit",
                 width=80,
                 command=lambda img_id=img_id: self.edit_image_notes(
-                    img_id, self.master.selected_character_id, extra_images_frame, create_thumbnail
+                    img_id, selected_character_id, extra_images_frame, create_thumbnail
                 ),
             )
             edit_button.grid(row=0, column=2, rowspan=1, padx=5, pady=(5, 0), sticky="e")
 
-            # Delete Button
             delete_button = ctk.CTkButton(
                 frame,
                 text="Delete",
@@ -95,10 +99,11 @@ class ExtraImagesManager:
                 fg_color="red",
                 hover_color="darkred",
                 command=lambda img_id=img_id: self.delete_image(
-                    img_id, self.master.selected_character_id, extra_images_frame, create_thumbnail
+                    img_id, selected_character_id, extra_images_frame, create_thumbnail
                 ),
             )
             delete_button.grid(row=1, column=2, rowspan=1, padx=5, pady=(5, 0), sticky="e")
+
 
 
     def save_image(self, selected_character_id, image_path_entry, image_name_entry, image_notes_textbox, extra_images_frame, create_thumbnail, modal_window):
@@ -443,7 +448,7 @@ class ExtraImagesManager:
         name_label = ctk.CTkLabel(name_frame, text="Image Name:", anchor="w")
         name_label.pack(side="left", padx=5)
 
-        image_name_entry = ctk.CTkEntry(name_frame, placeholder_text="Default: File Name", width=240)
+        image_name_entry = ctk.CTkEntry(name_frame, placeholder_text="", width=240)
         image_name_entry.pack(side="left", padx=5)
 
         # Image Notes Section

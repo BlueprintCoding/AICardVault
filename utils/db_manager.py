@@ -60,6 +60,17 @@ class DatabaseManager:
                 value TEXT
             )
         """)
+         
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS character_relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_id INTEGER NOT NULL,
+            related_character_id INTEGER NOT NULL,
+            FOREIGN KEY(character_id) REFERENCES characters(id),
+            FOREIGN KEY(related_character_id) REFERENCES characters(id)
+            )
+        """)
+
 
         connection.commit()
         connection.close()
