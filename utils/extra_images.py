@@ -35,7 +35,7 @@ class ExtraImagesManager:
         connection.close()
 
         if not images:
-            print("No extra images found for the selected character.")
+            # print("No extra images found for the selected character.")
             return
 
         for img_id, image_name, image_note, created_date, last_modified_date in images:

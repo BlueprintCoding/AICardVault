@@ -4,6 +4,8 @@ import os
 import re 
 import shutil
 import sqlite3
+import time
+from functools import partial
 from utils.db_manager import DatabaseManager
 from utils.file_handler import FileHandler
 from datetime import datetime
@@ -16,9 +18,14 @@ class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("AI Card Vault")
-        self.geometry("1200x700")
+        self.geometry("1400x700")
         ctk.set_appearance_mode("dark")  # Use system theme
         ctk.set_default_color_theme("assets/AiCardVaultTheme.json")
+        self.current_page = 0  # Start at the first page
+        self.items_per_page = 6  # Display 8 cards per page
+        self.total_pages = 0  # Calculate based on the number of items
+        self.filtered_characters = []  # This will hold the search results
+        self.search_debounce_timer = None
 
         # Initialize database and file handler
         self.db_manager = DatabaseManager()
@@ -29,6 +36,11 @@ class CharacterCardManagerApp(ctk.CTk):
             "appearance_mode": self.db_manager.get_setting("appearance_mode", "dark"),
             "sillytavern_path": self.db_manager.get_setting("sillytavern_path", ""),
         }
+
+
+        # Ensure default sort order is set if not already present
+        if not self.db_manager.get_setting("default_sort_order"):
+            self.db_manager.set_setting("default_sort_order", "A - Z")
 
         # Apply appearance mode
         ctk.set_appearance_mode(self.settings["appearance_mode"])
@@ -131,19 +143,7 @@ class CharacterCardManagerApp(ctk.CTk):
         list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
         list_label.pack(pady=(10, 0))
 
-        # Load and display all characters initially
-        self.all_characters = self.get_character_list()
-
-        # Card Count Label
-        self.card_count_label = ctk.CTkLabel(
-            self.character_list_frame,
-            text=f"Total Cards: {len(self.all_characters)}",
-            font=ctk.CTkFont(size=12),
-            text_color="gray"
-        )
-        self.card_count_label.pack(pady=(0, 5))
-
-        # Search bar
+        # Search Bar
         self.search_var = ctk.StringVar()
         search_entry = ctk.CTkEntry(
             self.character_list_frame,
@@ -153,15 +153,67 @@ class CharacterCardManagerApp(ctk.CTk):
         )
         search_entry.pack(pady=(10, 5), padx=10)
 
-        # Bind the search entry to the search function
-        self.search_var.trace_add("write", lambda *args: self.filter_character_list())
+        # Bind the search entry to the debounce function
+        self.search_var.trace_add("write", lambda *args: self.debounce_search())
+
+        # Sort Dropdown
+        self.sort_var = ctk.StringVar(value="A - Z")
+        sort_dropdown = ctk.CTkOptionMenu(
+            self.character_list_frame,
+            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
+            variable=self.sort_var,
+            command=self.sort_character_list
+        )
+        sort_dropdown.pack(pady=(5, 10), padx=10)
 
         # Scrollable Frame for Characters
         self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
         self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
+        # Navigation Buttons
+        self.create_navigation_buttons()
+
+        # Initialize Card Count Label early
+        self.card_count_label = ctk.CTkLabel(
+            self.character_list_frame,
+            text="Total Cards: 0",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.card_count_label.pack(pady=(0, 5))
+
+        # Load and display all characters initially
+        self.all_characters = self.get_character_list()
+
+        # Default Sort
+        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
+        self.filtered_characters = self.all_characters.copy()  # Initially, no filtering
+        self.sort_character_list(default_sort_order)
+
         # Display characters
-        self.display_characters(self.all_characters)
+        self.display_characters()
+
+
+
+    def sort_character_list(self, sort_option):
+        """Sort the character list based on the selected option."""
+        # Sort logic
+        if sort_option == "A - Z":
+            self.filtered_characters.sort(key=lambda char: char["name"].lower())
+        elif sort_option == "Z - A":
+            self.filtered_characters.sort(key=lambda char: char["name"].lower(), reverse=True)
+        elif sort_option == "Newest":
+            self.filtered_characters.sort(key=lambda char: char["created_date"], reverse=True)
+        elif sort_option == "Oldest":
+            self.filtered_characters.sort(key=lambda char: char["created_date"])
+        elif sort_option == "Most Recently Edited":
+            self.filtered_characters.sort(key=lambda char: char["last_modified_date"], reverse=True)
+
+        # Recalculate pages and refresh the display
+        self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
+        self.current_page = 0  # Reset to the first page
+        self.display_characters()
+        self.update_navigation_buttons()
 
 
 
@@ -222,7 +274,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Last Modified Date Label
         modified_date_label = ctk.CTkLabel(char_frame, text=f"Last Modified: {formatted_last_modified_date}", anchor="w", font=ctk.CTkFont(size=12))
-        modified_date_label.grid(row=2, column=1, sticky="w", pady=(0,2), padx=5)
+        modified_date_label.grid(row=2, column=1, sticky="w", pady=(0,3), padx=5)
 
         # Bind click events to `select_character_by_id`
         widgets_to_bind = [char_frame, thumbnail_label, name_label, created_date_label, modified_date_label]
@@ -235,32 +287,129 @@ class CharacterCardManagerApp(ctk.CTk):
     def filter_character_list(self):
         """Filter the character list based on the search query."""
         query = self.search_var.get().lower().strip()
+
         if not query:
             # If the search bar is empty, display all characters
-            self.display_characters(self.all_characters)
+            self.filtered_characters = self.all_characters
         else:
             # Preprocess the query by removing non-alphanumeric characters
-            processed_query = re.sub(r'\W+', '', query)  # Remove all non-alphanumeric characters
-            
+            processed_query = re.sub(r'\W+', '', query)
+
             # Filter characters by name
-            filtered_characters = [
+            self.filtered_characters = [
                 char for char in self.all_characters
                 if processed_query in re.sub(r'\W+', '', char["name"].lower())
             ]
-            self.display_characters(filtered_characters)
+
+        # Recalculate total pages and reset to the first page
+        self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
+        self.current_page = 0
+        self.display_characters()
+        self.update_navigation_buttons()
+
+    def debounce_search(self, *args):
+        """Debounce the search input to prevent rapid calls."""
+        # Cancel the existing timer if there is one
+        if self.search_debounce_timer is not None:
+            self.after_cancel(self.search_debounce_timer)
+
+        # Set a new timer to execute the actual search function
+        self.search_debounce_timer = self.after(300, self.filter_character_list)
             
-    def display_characters(self, characters):
-        """Display a list of characters in the scrollable frame."""
+    def display_characters(self):
+        """Display the characters for the current page."""
         # Clear the current list
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
 
-        # Add filtered characters to the list
-        for char in characters:
+        # Calculate start and end indices for the current page
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+
+        # Get the characters for the current page
+        characters_to_display = self.filtered_characters[start_index:end_index]
+
+        # Add characters to the list
+        for char in characters_to_display:
             self.add_character_to_list(char)
 
         # Update the card count label
-        self.card_count_label.configure(text=f"Total Cards: {len(characters)}")
+        self.card_count_label.configure(
+            text=f"Showing {len(self.filtered_characters)} Results | Page {self.current_page + 1} of {self.total_pages}"
+        )
+
+
+    def create_navigation_buttons(self):
+        """Create navigation buttons for pagination with a page number box."""
+        nav_frame = ctk.CTkFrame(self.character_list_frame)
+        nav_frame.pack(fill="x", pady=(5, 10))
+
+        # Previous Button
+        self.prev_button = ctk.CTkButton(nav_frame, text="Previous", command=self.prev_page)
+        self.prev_button.pack(side="left", padx=5)
+
+        # Page Number Entry
+        self.page_var = ctk.StringVar(value="1")
+        self.page_entry = ctk.CTkEntry(
+            nav_frame,
+            textvariable=self.page_var,
+            width=50,
+            justify="center"
+        )
+        self.page_entry.pack(side="left", padx=5)
+        self.page_entry.bind("<Return>", lambda e: self.jump_to_page())  # Trigger jump on Enter key
+
+        # Total Pages Label
+        self.total_pages_label = ctk.CTkLabel(
+            nav_frame,
+            text=f"of {self.total_pages}",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"  # Corrected: Set text_color directly on the label
+        )
+        self.total_pages_label.pack(side="left", padx=5)
+
+        # Next Button
+        self.next_button = ctk.CTkButton(nav_frame, text="Next", command=self.next_page)
+        self.next_button.pack(side="right", padx=5)
+
+        self.update_navigation_buttons()
+        
+    def jump_to_page(self):
+        """Jump to a specific page entered in the page number box."""
+        try:
+            page_number = int(self.page_var.get()) - 1  # Convert to zero-based index
+            if 0 <= page_number < self.total_pages:
+                self.current_page = page_number
+                self.display_characters()
+                self.update_navigation_buttons()
+            else:
+                self.show_message("Invalid page number.", "error")
+        except ValueError:
+            self.show_message("Please enter a valid number.", "error")
+
+    def update_navigation_buttons(self):
+        """Enable or disable navigation buttons based on the current page and update page number."""
+        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
+
+        # Update page number and total pages label
+        self.page_var.set(str(self.current_page + 1))
+        self.total_pages_label.configure(text=f"of {self.total_pages}")
+
+    def prev_page(self):
+        """Go to the previous page."""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.display_characters()
+            self.update_navigation_buttons()
+
+    def next_page(self):
+        """Go to the next page."""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.display_characters()
+            self.update_navigation_buttons()
+
 
     def create_thumbnail(self, image_path):
         """Create a thumbnail for the character list using CTkImage."""
@@ -301,7 +450,7 @@ class CharacterCardManagerApp(ctk.CTk):
         """Create the right panel for editing character details."""
         # Create a scrollable frame for the entire edit panel
         self.edit_panel = ctk.CTkScrollableFrame(self)
-        self.edit_panel.grid(row=0, column=2, sticky="nswe", padx=10, pady=10)
+        self.edit_panel.grid(row=0, column=2, sticky="nswe", padx=(10,20), pady=10)
 
         # Message Banner
         self.message_banner = ctk.CTkLabel(
@@ -358,7 +507,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.misc_notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
 
         # Extra Images Tab
-        images_tab = tabview.add("Extra Images")
+        images_tab = tabview.add("Images")
         self.extra_images_frame = ctk.CTkScrollableFrame(images_tab, height=200)
         self.extra_images_frame.pack(fill="both", expand=True, padx=0, pady=5)
 
@@ -370,7 +519,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.add_image_button.pack(pady=5, padx=10)
 
         # Related Characters Tab
-        related_tab = tabview.add("Related Characters")
+        related_tab = tabview.add("Related")
 
         # Search Bar for Related Characters
         self.related_search_var = ctk.StringVar()
@@ -396,6 +545,132 @@ class CharacterCardManagerApp(ctk.CTk):
             command=self.open_link_character_modal
         )
         self.add_related_character_button.pack(pady=5, padx=10)
+                
+        # Tags Tab
+        tags_tab = tabview.add("Tags")
+
+        # Character Tags Section
+        character_tag_label = ctk.CTkLabel(tags_tab, text="Assigned Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+
+        # Wrapping frame for assigned character tags
+        assigned_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        assigned_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        assigned_character_frame_wrapper.pack_propagate(False)
+
+        # Assigned Tags Frame inside wrapper
+        self.assigned_character_tags_frame = ctk.CTkScrollableFrame(assigned_character_frame_wrapper)
+        self.assigned_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Potential Tags Frame
+        all_character_tag_label = ctk.CTkLabel(tags_tab, text="Available Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        all_character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+
+        # Wrapping frame for potential character tags
+        potential_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        potential_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        potential_character_frame_wrapper.pack_propagate(False)
+
+        # Potential Tags Frame inside wrapper
+        self.potential_character_tags_frame = ctk.CTkScrollableFrame(potential_character_frame_wrapper)
+        self.potential_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Search/Add Input for Character Tags
+        self.character_tag_search_var = ctk.StringVar()
+        character_tag_frame = ctk.CTkFrame(tags_tab, fg_color="transparent")
+        character_tag_frame.pack(fill="x", padx=10, pady=(1, 2))
+
+        character_tag_entry = ctk.CTkEntry(
+            character_tag_frame,
+            textvariable=self.character_tag_search_var,
+            placeholder_text="Search or add character tags...",
+            width=260,
+        )
+        character_tag_entry.pack(side="left", fill="x", expand=True)
+
+        # Bind search entry events
+        character_tag_entry.bind("<KeyRelease>", lambda e: self.update_tag_search_results(
+            self.character_tag_search_var.get(), "character", self.potential_character_tags_frame
+        ))
+        character_tag_entry.bind("<Return>", lambda e: self.add_tag(self.character_tag_search_var.get(), "character"))
+
+        # Add Tag Button
+        character_add_tag_button = ctk.CTkButton(
+            character_tag_frame,
+            text="+",
+            width=30,
+            command=lambda: self.add_tag_from_input(self.character_tag_search_var, "character")
+        )
+        character_add_tag_button.pack(side="left", padx=(5, 0))
+
+        # Load all potential character tags by default
+        self.update_tag_search_results("", "character", self.potential_character_tags_frame)
+
+        # Model/API Tags Section
+        model_api_tag_label = ctk.CTkLabel(tags_tab, text="Assigned Model/API Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        model_api_tag_label.pack(pady=2, padx=5, anchor="w")
+
+        # Wrapping frame for assigned model/API tags
+        assigned_model_api_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        assigned_model_api_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        assigned_model_api_frame_wrapper.pack_propagate(False)
+
+        # Assigned Tags Frame inside wrapper
+        self.assigned_model_api_tags_frame = ctk.CTkScrollableFrame(assigned_model_api_frame_wrapper)
+        self.assigned_model_api_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Model/API Tags Section
+        all_model_api_tag_label = ctk.CTkLabel(tags_tab, text="Available Model/API Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        all_model_api_tag_label.pack(pady=2, padx=5, anchor="w")
+
+        # Wrapping frame for potential model/API tags
+        potential_model_api_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        potential_model_api_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        potential_model_api_frame_wrapper.pack_propagate(False)
+
+        # Potential Tags Frame inside wrapper
+        self.potential_model_api_tags_frame = ctk.CTkScrollableFrame(potential_model_api_frame_wrapper)
+        self.potential_model_api_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Search/Add Input for Model/API Tags
+        self.model_api_tag_search_var = ctk.StringVar()
+        model_api_tag_frame = ctk.CTkFrame(tags_tab, fg_color="transparent")
+        model_api_tag_frame.pack(fill="x", padx=0, pady=(1, 1))
+
+        model_api_tag_entry = ctk.CTkEntry(
+            model_api_tag_frame,
+            textvariable=self.model_api_tag_search_var,
+            placeholder_text="Search or add model/api tags...",
+            placeholder_text_color="#ffffff",
+            width=260,
+        )
+        model_api_tag_entry.pack(side="left", fill="x", expand=True)
+
+        # Bind search entry events
+        model_api_tag_entry.bind("<KeyRelease>", lambda e: self.update_tag_search_results(
+            self.model_api_tag_search_var.get(), "model_api", self.potential_model_api_tags_frame
+        ))
+        model_api_tag_entry.bind("<Return>", lambda e: self.add_tag(self.model_api_tag_search_var.get(), "model_api"))
+
+        # Add Tag Button
+        model_api_add_tag_button = ctk.CTkButton(
+            model_api_tag_frame,
+            text="+",
+            width=30,
+            command=lambda: self.add_tag_from_input(self.model_api_tag_search_var, "model_api")
+        )
+        model_api_add_tag_button.pack(side="left", padx=(5, 0))
+
+        # Load all potential model/API tags by default
+        self.update_tag_search_results("", "model_api", self.potential_model_api_tags_frame)
 
 
         # Metadata Tab
@@ -412,6 +687,297 @@ class CharacterCardManagerApp(ctk.CTk):
         # Save Button
         self.save_button = ctk.CTkButton(self.edit_panel, text="Save Changes", command=self.save_changes)
         self.save_button.pack(pady=10, padx=10, fill="x")
+
+        # Bind mouse wheel scrolling for main scrollable frames
+        self.bind_mouse_wheel(self.scrollable_frame)  # Character list
+        self.bind_mouse_wheel(self.edit_panel)  # Edit panel
+        self.bind_mouse_wheel(self.extra_images_frame)  # Extra Images
+
+        # Related Characters
+        self.bind_mouse_wheel(self.related_characters_frame)
+
+        # Tags
+        self.bind_mouse_wheel(self.assigned_character_tags_frame)
+        self.bind_mouse_wheel(self.potential_character_tags_frame)
+        self.bind_mouse_wheel(self.assigned_model_api_tags_frame)
+        self.bind_mouse_wheel(self.potential_model_api_tags_frame)
+
+    def bind_mouse_wheel(self, frame, parent_frame=None):
+        """Bind the mouse wheel event to a CTkScrollableFrame and prioritize it when hovered."""
+        def _on_mouse_wheel(event):
+            # Scroll the frame
+            if frame._parent_canvas:
+                frame._parent_canvas.yview_scroll(-1 * int(event.delta / 10), "units")
+            return "break"
+
+        def _bind_to_mouse_wheel(_):
+            frame.bind_all("<MouseWheel>", _on_mouse_wheel)
+
+        def _unbind_from_mouse_wheel(_):
+            frame.unbind_all("<MouseWheel>")
+            if parent_frame:
+                parent_frame.bind_all("<MouseWheel>", _on_mouse_wheel)
+
+        # Bind events for when the mouse enters or leaves the frame
+        frame.bind("<Enter>", _bind_to_mouse_wheel)
+        frame.bind("<Leave>", _unbind_from_mouse_wheel)
+
+        # Also bind to the parent frame if provided
+        if parent_frame:
+            parent_frame.bind("<Enter>", lambda _: parent_frame.bind_all("<MouseWheel>", _on_mouse_wheel))
+
+
+    def search_tags(self, query, category):
+        """Search globally available tags."""
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+
+        cursor.execute("""
+            SELECT name FROM tags WHERE category = ? AND name LIKE ?
+        """, (category, f"%{query}%"))
+        tags = [row[0] for row in cursor.fetchall()]
+
+        connection.close()
+        return tags
+    
+
+    def update_tag_search_results(self, query, category, frame):
+        """Update the potential tag search results dynamically, excluding assigned tags."""
+        # Clear the frame
+        for widget in frame.winfo_children():
+            widget.destroy()
+
+        # Fetch all tags matching the category
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+
+        # Get tags already assigned to the character
+        assigned_tags = set()
+        if hasattr(self, "selected_character_id"):
+            cursor.execute("""
+                SELECT t.name FROM tags t
+                INNER JOIN character_tags ct ON t.id = ct.tag_id
+                WHERE ct.character_id = ? AND t.category = ?
+            """, (self.selected_character_id, category))
+            assigned_tags = {row[0] for row in cursor.fetchall()}
+
+        # Fetch all potential tags
+        if query.strip():
+            cursor.execute("""
+                SELECT name FROM tags WHERE category = ? AND name LIKE ?
+            """, (category, f"%{query.strip()}%"))
+        else:
+            cursor.execute("""
+                SELECT name FROM tags WHERE category = ?
+            """, (category,))
+        all_tags = [row[0] for row in cursor.fetchall()]
+        connection.close()
+
+        # Exclude assigned tags
+        potential_tags = [tag for tag in all_tags if tag not in assigned_tags]
+
+        # Display the potential tags
+        for tag in potential_tags:
+            tag_frame = ctk.CTkFrame(frame, corner_radius=5)
+            tag_frame.pack(pady=2, padx=5, fill="x")
+
+            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
+            tag_label.pack(side="left", padx=5)
+
+            # Use functools.partial to pass arguments correctly
+            add_button = ctk.CTkButton(
+                tag_frame,
+                text="+",
+                width=30,
+                command=partial(self.add_tag, tag, category)
+            )
+            add_button.pack(side="right", padx=1)
+
+
+
+    def load_tags(self):
+        """Load tags for the selected character."""
+        if not hasattr(self, "selected_character_id"):
+            self.clear_tags()
+            return
+
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+
+        # Fetch character tags
+        cursor.execute("""
+            SELECT t.name FROM tags t
+            INNER JOIN character_tags ct ON t.id = ct.tag_id
+            WHERE ct.character_id = ? AND t.category = 'character'
+        """, (self.selected_character_id,))
+        character_tags = [row[0] for row in cursor.fetchall()]
+
+        # Fetch model/API tags
+        cursor.execute("""
+            SELECT t.name FROM tags t
+            INNER JOIN character_tags ct ON t.id = ct.tag_id
+            WHERE ct.character_id = ? AND t.category = 'model_api'
+        """, (self.selected_character_id,))
+        model_api_tags = [row[0] for row in cursor.fetchall()]
+
+        connection.close()
+
+        # Display assigned tags
+        self.display_tags(self.assigned_character_tags_frame, character_tags, "character")
+        self.display_tags(self.assigned_model_api_tags_frame, model_api_tags, "model_api")
+
+
+    def display_tags(self, frame, tags, category):
+        """Display tags in the specified frame."""
+        for widget in frame.winfo_children():
+            widget.destroy()
+
+        for tag in tags:
+            tag_frame = ctk.CTkFrame(frame, corner_radius=5)
+            tag_frame.pack(pady=2, padx=5, fill="x")
+
+            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
+            tag_label.pack(side="left", padx=5)
+
+            delete_button = ctk.CTkButton(
+                tag_frame,
+                text="X",
+                width=30,
+                fg_color="red",
+                command=lambda tag_name=tag: self.remove_tag(tag_name, category)
+            )
+            delete_button.pack(side="right", padx=1)
+
+    def clear_tags(self):
+        """Clear all tags displayed in the tag frames."""
+        for frame in [
+            self.assigned_character_tags_frame, self.potential_character_tags_frame,
+            self.assigned_model_api_tags_frame, self.potential_model_api_tags_frame
+        ]:
+            for widget in frame.winfo_children():
+                widget.destroy()
+
+    def add_tag_from_input(self, tag_var, category):
+        """Add a new tag from the search input field, assign it, and clear the input."""
+        tag_name = tag_var.get().strip()
+        if not tag_name:
+            self.show_message("Tag name cannot be empty.", "error")
+            return
+
+        try:
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+
+            # Check if the tag already exists globally
+            cursor.execute("SELECT id FROM tags WHERE name = ? AND category = ?", (tag_name, category))
+            tag = cursor.fetchone()
+
+            if tag:
+                # Tag already exists
+                tag_id = tag[0]
+            else:
+                # Add the tag globally if it doesn't exist
+                cursor.execute("INSERT INTO tags (name, category) VALUES (?, ?)", (tag_name, category))
+                connection.commit()
+                tag_id = cursor.lastrowid
+
+            # Associate the tag with the selected character
+            if hasattr(self, "selected_character_id"):
+                cursor.execute("""
+                    INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)
+                """, (self.selected_character_id, tag_id))
+                connection.commit()
+
+            # Clear the search input field
+            tag_var.set("")
+
+            # Refresh assigned and potential tags
+            self.load_tags()
+            if category == "character":
+                self.update_tag_search_results("", "character", self.potential_character_tags_frame)
+            elif category == "model_api":
+                self.update_tag_search_results("", "model_api", self.potential_model_api_tags_frame)
+
+            self.show_message(f"Tag '{tag_name}' added and assigned successfully.", "success")
+
+        except Exception as e:
+            self.show_message(f"Failed to add and assign tag: {e}", "error")
+
+        finally:
+            connection.close()
+
+
+    def add_tag(self, tag_name, category):
+        """Add a tag globally and associate it with the selected character."""
+        if not tag_name.strip():
+            return
+
+        try:
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+
+            # Insert the tag globally if it doesn't already exist
+            cursor.execute("""
+                INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)
+            """, (tag_name, category))
+
+            # Get the tag ID
+            cursor.execute("SELECT id FROM tags WHERE name = ? AND category = ?", (tag_name, category))
+            tag_id = cursor.fetchone()[0]
+
+            # Associate the tag with the selected character
+            if hasattr(self, "selected_character_id"):
+                cursor.execute("""
+                    INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)
+                """, (self.selected_character_id, tag_id))
+
+            connection.commit()
+            connection.close()
+
+            # Refresh assigned and potential tags
+            self.load_tags()
+            if category == "character":
+                self.update_tag_search_results(self.character_tag_search_var.get(), "character", self.potential_character_tags_frame)
+            elif category == "model_api":
+                self.update_tag_search_results(self.model_api_tag_search_var.get(), "model_api", self.potential_model_api_tags_frame)
+
+        except Exception as e:
+            print(f"Error adding tag: {e}")
+
+
+    def remove_tag(self, tag_name, category):
+        """Remove a tag association from the selected character."""
+        try:
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
+
+            # Get the tag ID
+            cursor.execute("SELECT id FROM tags WHERE name = ? AND category = ?", (tag_name, category))
+            tag_id = cursor.fetchone()
+            if tag_id:
+                tag_id = tag_id[0]
+
+                # Delete the character-tag association
+                cursor.execute("""
+                    DELETE FROM character_tags WHERE character_id = ? AND tag_id = ?
+                """, (self.selected_character_id, tag_id))
+
+                connection.commit()
+
+            connection.close()
+
+            # Refresh tags
+            self.load_tags()
+
+            # Refresh potential tags to include the removed tag
+            if category == "character":
+                self.update_tag_search_results(self.character_tag_search_var.get(), "character", self.potential_character_tags_frame)
+            elif category == "model_api":
+                self.update_tag_search_results(self.model_api_tag_search_var.get(), "model_api", self.potential_model_api_tags_frame)
+
+        except Exception as e:
+            print(f"Error removing tag: {e}")
+
 
 
     def confirm_delete_character(self):
@@ -473,6 +1039,9 @@ class CharacterCardManagerApp(ctk.CTk):
             # Remove the character from the UI list
             self.remove_character_from_list(self.selected_character_id)
 
+            # Clear the currently selected character in the sidebar
+            self.clear_selected_character_sidebar()
+
             # Clear the edit panel (ensure widgets exist before clearing)
             if hasattr(self, "name_entry") and self.name_entry.winfo_exists():
                 self.clear_edit_panel()
@@ -484,19 +1053,41 @@ class CharacterCardManagerApp(ctk.CTk):
             self.show_message(f"Failed to delete character: {str(e)}", "error")
 
 
+
     def remove_character_from_list(self, character_id):
-        """Remove the character from the UI list."""
+        """Remove the character from the in-memory lists and refresh the UI."""
         try:
-            for widget in self.scrollable_frame.winfo_children():
-                if hasattr(widget, "character_id") and widget.character_id == character_id:
-                    widget.destroy()
-                    print(f"Removed character ID: {character_id} from UI.")
-                    return
-            # Update the card count label
-            self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
-            print(f"Character ID: {character_id} not found in UI.")
+            # Remove from the all_characters list
+            self.all_characters = [char for char in self.all_characters if char["id"] != character_id]
+
+            # Remove from the filtered_characters list
+            self.filtered_characters = [char for char in self.filtered_characters if char["id"] != character_id]
+
+            # Recalculate total pages and reset to the current page
+            self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
+            if self.current_page >= self.total_pages:
+                self.current_page = max(self.total_pages - 1, 0)  # Ensure valid page index
+
+            # Refresh the UI
+            self.display_characters()
+            self.update_navigation_buttons()
+
+            # Debugging output
+            print(f"Character ID: {character_id} removed from lists.")
         except Exception as e:
             print(f"Error removing character from list: {str(e)}")
+
+
+    def clear_selected_character_sidebar(self):
+        """Clear the currently selected character details from the sidebar."""
+        if self.selected_character_frame:
+            # Destroy all child widgets inside the selected character frame
+            for widget in self.selected_character_frame.winfo_children():
+                widget.destroy()
+
+            # Hide the frame
+            self.selected_character_frame.pack_forget()
+
 
     def clear_edit_panel(self):
         """Clear the edit panel fields."""
@@ -612,6 +1203,9 @@ class CharacterCardManagerApp(ctk.CTk):
         position_top = int((screen_height / 2) - (window_height / 2))
         position_right = int((screen_width / 2) - (window_width / 2))
         self.add_character_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
+
+                # Inside add_character modal
+        self.bind_mouse_wheel(scrollable_frame)  # Add Character Modal's scrollable frame
 
     def import_aicc_card(self):
         """Import a card from AICC and handle only the file import."""
@@ -759,14 +1353,37 @@ class CharacterCardManagerApp(ctk.CTk):
             connection.commit()
             connection.close()
 
-            # Update the UI dynamically
-            self.update_character_list(self.selected_character_id, character_name, last_modified_date)
+            # Update the internal list dynamically
+            for character in self.all_characters:
+                if character["id"] == self.selected_character_id:
+                    character["name"] = character_name
+                    character["last_modified_date"] = last_modified_date
+                    break
+
+            # Sort the list if required
+            sort_option = self.sort_var.get()
+            self.sort_character_list(sort_option)
+
+            # Find the updated character's index in the filtered list
+            new_index = next(
+                (index for index, char in enumerate(self.filtered_characters) if char["id"] == self.selected_character_id),
+                0
+            )
+
+            # Calculate the page the character belongs to
+            self.current_page = new_index // self.items_per_page
+
+            # Refresh the UI
+            self.display_characters()
+            self.update_navigation_buttons()
+
+            # Highlight the updated character
+            self.highlight_selected_character(self.selected_character_id)
 
             # Show success message
             self.show_message("Changes saved successfully.", "success")
         except Exception as e:
             self.show_message(f"Failed to save changes: {str(e)}", "error")
-
 
     def select_character_by_id(self, character_id):
         """Handle character selection by ID and populate the edit panel."""
@@ -844,6 +1461,7 @@ class CharacterCardManagerApp(ctk.CTk):
                 )
 
                 self.load_related_characters()
+                self.load_tags()
 
                 # Update the currently selected character in the sidebar
                 image_path = os.path.join("CharacterCards", name, main_file) if main_file else "assets/default_thumbnail.png"
@@ -880,7 +1498,7 @@ class CharacterCardManagerApp(ctk.CTk):
                     widget.configure(fg_color="#D8BFD8")  # Light purple background
 
                     # Schedule a return to the original color after 2 seconds
-                    self.after(100, lambda w=widget: w.configure(fg_color="transparent"))
+                    self.after(100, lambda w=widget: w.configure(fg_color="#212121"))
                 else:
                     # Reset the border for unselected characters
                     widget.configure(border_color="", border_width=0)
@@ -932,12 +1550,29 @@ class CharacterCardManagerApp(ctk.CTk):
     def update_character_list(self, character_id, character_name, last_modified_date):
         """Update the character list dynamically after changes."""
         formatted_date = datetime.strptime(last_modified_date, "%Y-%m-%d %H:%M:%S").strftime("%m/%d/%Y %I:%M %p")
+        
+        # Update the specific character in the list
+        for character in self.all_characters:
+            if character["id"] == character_id:
+                character["name"] = character_name
+                character["last_modified_date"] = last_modified_date
+                break
 
-        # Find the character frame and update it
+        # Sort the list alphabetically by name (optional, depending on UI requirements)
+        self.all_characters.sort(key=lambda char: char["name"].lower())
+
+        # Refresh filtered characters and pagination
+        self.filtered_characters = self.all_characters
+        self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
+        self.current_page = 0  # Reset to the first page
+
+        # Refresh UI
+        self.display_characters()
+        self.update_navigation_buttons()
+
+        # Update UI for the specific character in the scrollable frame
         for widget in self.scrollable_frame.winfo_children():
-            # Check if the widget has a `character_id` attribute
             if hasattr(widget, "character_id") and widget.character_id == character_id:
-                # Update the name and last modified date
                 for sub_widget in widget.winfo_children():
                     if isinstance(sub_widget, ctk.CTkLabel):
                         if sub_widget.cget("text").startswith("Last Modified:"):
@@ -948,18 +1583,12 @@ class CharacterCardManagerApp(ctk.CTk):
                 # Update internal attributes for consistency
                 widget.character_name = character_name
 
-                # Rebind click events for the updated frame and its children, including the image
+                # Rebind click events for the updated frame and its children
                 for sub_widget in widget.winfo_children():
-                    sub_widget.bind(
-                        "<Button-1>",
-                        lambda e, char_id=character_id: self.select_character_by_id(char_id),
-                    )
-                widget.bind(
-                    "<Button-1>",
-                    lambda e, char_id=character_id: self.select_character_by_id(char_id),
-                )
-
+                    sub_widget.bind("<Button-1>", lambda e, char_id=character_id: self.select_character_by_id(char_id))
+                widget.bind("<Button-1>", lambda e, char_id=character_id: self.select_character_by_id(char_id))
                 return
+
 
     def save_character_with_message(self):
         """Save the character to the database and filesystem, with messages."""
@@ -1006,13 +1635,6 @@ class CharacterCardManagerApp(ctk.CTk):
             else:
                 raise ValueError("No valid file found for saving.")
 
-            # Copy the PNG to SillyTavern path if the checkbox is selected
-            if self.auto_add_checkbox.get() and self.settings["sillytavern_path"]:
-                sillytavern_characters_path = os.path.join(self.settings["sillytavern_path"], "characters")
-                os.makedirs(sillytavern_characters_path, exist_ok=True)
-                shutil.copy(final_file_path, sillytavern_characters_path)
-                print(f"Copied {final_file_path} to SillyTavern characters directory.")
-
             # Generate timestamps
             created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             last_modified_date = created_date
@@ -1030,8 +1652,8 @@ class CharacterCardManagerApp(ctk.CTk):
             new_character_id = cursor.lastrowid
             connection.close()
 
-            # Update the character list in the UI
-            self.add_character_to_list({
+            # Add the character to the in-memory list
+            self.all_characters.append({
                 "id": new_character_id,
                 "name": character_name,
                 "image_path": final_file_path,
@@ -1039,15 +1661,34 @@ class CharacterCardManagerApp(ctk.CTk):
                 "last_modified_date": last_modified_date,
             })
 
-            # Refresh the edit panel with the newly saved character
+            # Reapply sorting based on the current sort option
+            self.sort_character_list(self.sort_var.get())
+
+            # Find the new character's index in the sorted list
+            new_character_index = next(
+                (index for index, char in enumerate(self.filtered_characters) if char["id"] == new_character_id),
+                0
+            )
+
+            # Calculate the page for the new character
+            self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
+            self.current_page = new_character_index // self.items_per_page
+
+            # Refresh the displayed characters
+            self.display_characters()
+            self.update_navigation_buttons()
+
+            # Highlight the new character
             self.select_character_by_id(new_character_id)
+
 
             # Show success message and close the modal
             self.show_add_character_message("Character added successfully!", "success")
-            self.add_character_window.after(1500, self.add_character_window.destroy())
+            self.add_character_window.after(500, self.add_character_window.destroy())
 
         except Exception as e:
             self.show_add_character_message(f"Error saving character: {str(e)}", "error")
+
 
 
     def show_message(self, message, message_type="error"):
@@ -1171,6 +1812,10 @@ class CharacterCardManagerApp(ctk.CTk):
         # Scrollable Frame for Character List
         scrollable_frame = ctk.CTkScrollableFrame(modal, height=300)
         scrollable_frame.pack(fill="both", expand=True, padx=0, pady=5)
+        
+        # Inside open_link_character_modal
+        self.bind_mouse_wheel(scrollable_frame)  # Link Character Modal's scrollable frame
+
 
         def filter_and_display():
             query = search_var.get().lower().strip()
@@ -1205,6 +1850,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         search_var.trace_add("write", lambda *args: filter_and_display())
         filter_and_display()
+    
 
     def link_character(self, related_character_id, modal):
         """Link a character to the currently selected character."""
@@ -1270,7 +1916,6 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_message(f"Failed to unlink character: {e}", "error")
-
 
 
 if __name__ == "__main__":

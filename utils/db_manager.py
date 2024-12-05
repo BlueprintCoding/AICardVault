@@ -21,7 +21,7 @@ class DatabaseManager:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS characters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
+            name TEXT,
             main_file TEXT,
             notes TEXT,
             misc_notes TEXT,
@@ -69,6 +69,24 @@ class DatabaseManager:
             FOREIGN KEY(character_id) REFERENCES characters(id),
             FOREIGN KEY(related_character_id) REFERENCES characters(id)
             )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            category TEXT NOT NULL CHECK(category IN ('character', 'model_api'))
+            )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS character_tags (
+            character_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE,
+            UNIQUE(character_id, tag_id)
+        )
         """)
 
 

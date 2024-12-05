@@ -2,17 +2,11 @@ import customtkinter as ctk
 from tkinter import filedialog
 
 class SettingsModal:
-    def __init__(self, parent, db_manager, update_settings_callback):
-        self.parent = parent
-        self.db_manager = db_manager
-        self.update_settings_callback = update_settings_callback
-        self.modal = None
-
     def open(self):
-        # Create the modal wiself.modal = ctk.CTkToplevel(self.parent)ndow
+        # Create the modal window
         self.modal = ctk.CTkToplevel(self.parent)
         self.modal.title("Settings")
-        self.modal.geometry("400x300")
+        self.modal.geometry("400x350")
 
         # Ensure the modal stays on top of the main window
         self.modal.transient(self.parent)
@@ -21,6 +15,7 @@ class SettingsModal:
         # Load current settings
         current_appearance = self.db_manager.get_setting("appearance_mode", "dark")
         current_path = self.db_manager.get_setting("sillytavern_path", "")
+        current_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
 
         # Appearance Mode Option
         appearance_label = ctk.CTkLabel(self.modal, text="Appearance Mode:")
@@ -34,7 +29,7 @@ class SettingsModal:
         self.appearance_option.pack(pady=5, padx=10, fill="x")
 
         # SillyTavern Path Selection
-        path_label = ctk.CTkLabel(self.modal, text="Path to SillyTavern User Folder (EX: C:\SillyTavern\data\default-user\characters):")
+        path_label = ctk.CTkLabel(self.modal, text="Path to SillyTavern User Folder:")
         path_label.pack(pady=10, padx=10, anchor="w")
 
         self.path_entry = ctk.CTkEntry(self.modal, width=300)
@@ -45,6 +40,17 @@ class SettingsModal:
             self.modal, text="Browse", command=self.browse_folder
         )
         browse_button.pack(pady=5, padx=10, anchor="e")
+
+        # Default Sort Order
+        sort_order_label = ctk.CTkLabel(self.modal, text="Default Sort Order:")
+        sort_order_label.pack(pady=10, padx=10, anchor="w")
+
+        self.sort_order_option = ctk.CTkOptionMenu(
+            self.modal,
+            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
+        )
+        self.sort_order_option.set(current_sort_order)
+        self.sort_order_option.pack(pady=5, padx=10, fill="x")
 
         # Save Button
         save_button = ctk.CTkButton(self.modal, text="Save", command=self.save_settings)
@@ -58,22 +64,25 @@ class SettingsModal:
             self.path_entry.insert(0, folder_path)
 
     def save_settings(self):
-        """Save the updated settings to the database."""
-        appearance_mode = self.appearance_option.get().lower()
-        sillytavern_path = self.path_entry.get()
+            """Save the updated settings to the database."""
+            appearance_mode = self.appearance_option.get().lower()
+            sillytavern_path = self.path_entry.get()
+            default_sort_order = self.sort_order_option.get()
 
-        # Update the database
-        self.db_manager.set_setting("appearance_mode", appearance_mode)
-        self.db_manager.set_setting("sillytavern_path", sillytavern_path)
+            # Update the database
+            self.db_manager.set_setting("appearance_mode", appearance_mode)
+            self.db_manager.set_setting("sillytavern_path", sillytavern_path)
+            self.db_manager.set_setting("default_sort_order", default_sort_order)
 
-        # Callback to update settings in the main app
-        self.update_settings_callback({
-            "appearance_mode": appearance_mode,
-            "sillytavern_path": sillytavern_path
-        })
+            # Callback to update settings in the main app
+            self.update_settings_callback({
+                "appearance_mode": appearance_mode,
+                "sillytavern_path": sillytavern_path,
+                "default_sort_order": default_sort_order,
+            })
 
-        # Close the modal
-        self.modal.destroy()
+            # Close the modal
+            self.modal.destroy()
 
     @staticmethod
     def _center_modal(window):
