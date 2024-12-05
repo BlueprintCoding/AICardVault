@@ -80,9 +80,14 @@ class CharacterCardManagerApp(ctk.CTk):
         # Persist settings in the database
         self.db_manager.set_setting("appearance_mode", updated_settings["appearance_mode"])
         self.db_manager.set_setting("sillytavern_path", updated_settings["sillytavern_path"])
+        self.db_manager.set_setting("default_sort_order", updated_settings["default_sort_order"])
 
         # Apply appearance mode
         ctk.set_appearance_mode(updated_settings["appearance_mode"])
+
+        # Refresh sort order in the character list
+        self.sort_var.set(updated_settings["default_sort_order"])
+        self.sort_character_list(updated_settings["default_sort_order"])
 
         print("Settings updated:", updated_settings)
 
@@ -157,7 +162,8 @@ class CharacterCardManagerApp(ctk.CTk):
         self.search_var.trace_add("write", lambda *args: self.debounce_search())
 
         # Sort Dropdown
-        self.sort_var = ctk.StringVar(value="A - Z")
+        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
+        self.sort_var = ctk.StringVar(value=default_sort_order)
         sort_dropdown = ctk.CTkOptionMenu(
             self.character_list_frame,
             values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
@@ -186,7 +192,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.all_characters = self.get_character_list()
 
         # Default Sort
-        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
+        
         self.filtered_characters = self.all_characters.copy()  # Initially, no filtering
         self.sort_character_list(default_sort_order)
 
@@ -701,6 +707,268 @@ class CharacterCardManagerApp(ctk.CTk):
         self.bind_mouse_wheel(self.potential_character_tags_frame)
         self.bind_mouse_wheel(self.assigned_model_api_tags_frame)
         self.bind_mouse_wheel(self.potential_model_api_tags_frame)
+
+    def create_edit_panel(self):
+        """Create the right panel for editing character details."""
+        # Create a scrollable frame for the entire edit panel
+        self.edit_panel = ctk.CTkScrollableFrame(self)
+        self.edit_panel.grid(row=0, column=2, sticky="nswe", padx=(10,20), pady=10)
+
+        # Message Banner
+        self.message_banner = ctk.CTkLabel(
+            self.edit_panel, text="", height=30, fg_color="#FFCDD2", corner_radius=5, text_color="black"
+        )
+        self.message_banner.pack(fill="x", padx=10, pady=5)
+        self.message_banner.pack_forget()  # Hide initially
+
+        # Title
+        title_frame = ctk.CTkFrame(self.edit_panel, fg_color="transparent")
+        title_frame.pack(fill="x", padx=10, pady=0)
+
+        edit_label = ctk.CTkLabel(title_frame, text="Edit Character", font=ctk.CTkFont(size=18, weight="bold"))
+        edit_label.pack(side="left")
+
+        # Add Delete Button
+        self.delete_button = ctk.CTkButton(
+            title_frame,
+            text="Delete",
+            fg_color="#f37a21",
+            hover_color="#bc5c14",
+            width=50,
+            command=self.confirm_delete_character,
+        )
+        self.delete_button.pack(side="right", padx=5)
+
+        # Character Name (label and input in the same row)
+        name_frame = ctk.CTkFrame(self.edit_panel, fg_color="transparent")
+        name_frame.pack(fill="x", padx=10, pady=0)
+
+        self.name_label = ctk.CTkLabel(name_frame, text="Character Name:")
+        self.name_label.pack(side="left", padx=0)
+
+        self.name_entry = ctk.CTkEntry(name_frame)
+        self.name_entry.pack(side="left", fill="x", expand=True, padx=5)
+
+        # Create a CTkTabview for organizing sections
+        tabview = ctk.CTkTabview(self.edit_panel, height=500)
+        tabview.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Notes Tab
+        notes_tab = tabview.add("Notes")
+            # Notes Section
+        self.notes_label = ctk.CTkLabel(notes_tab, text="Character Notes:", font=ctk.CTkFont(size=14, weight="bold"))
+        self.notes_label.pack(pady=(10, 5), padx=0, anchor="w")
+
+        self.notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
+        self.notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
+
+        self.misc_notes_label = ctk.CTkLabel(notes_tab, text="Miscellaneous Notes:", font=ctk.CTkFont(size=14, weight="bold"))
+        self.misc_notes_label.pack(pady=(10, 5), padx=5, anchor="w")
+
+        self.misc_notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
+        self.misc_notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
+
+        # Extra Images Tab
+        images_tab = tabview.add("Images")
+        self.extra_images_frame = ctk.CTkScrollableFrame(images_tab, height=200)
+        self.extra_images_frame.pack(fill="both", expand=True, padx=0, pady=5)
+
+        self.add_image_button = ctk.CTkButton(
+            images_tab,
+            text="Add Image",
+            command=self.extra_images_manager.add_image_to_character
+        )
+        self.add_image_button.pack(pady=5, padx=10)
+
+        # Related Characters Tab
+        related_tab = tabview.add("Related")
+
+        # Search Bar for Related Characters
+        self.related_search_var = ctk.StringVar()
+        related_search_entry = ctk.CTkEntry(
+            related_tab,
+            textvariable=self.related_search_var,
+            placeholder_text="Search characters...",
+            width=300,
+        )
+        related_search_entry.pack(pady=(10, 5), padx=10)
+
+        # Bind search bar to filter function
+        self.related_search_var.trace_add("write", lambda *args: self.filter_related_characters())
+
+        # Scrollable Frame for Related Characters List
+        self.related_characters_frame = ctk.CTkScrollableFrame(related_tab, height=200)
+        self.related_characters_frame.pack(fill="both", expand=True, padx=0, pady=5)
+
+        # Add Button for Linking a Character
+        self.add_related_character_button = ctk.CTkButton(
+            related_tab,
+            text="Link Character",
+            command=self.open_link_character_modal
+        )
+        self.add_related_character_button.pack(pady=5, padx=10)
+                
+        # Tags Tab
+        tags_tab = tabview.add("Tags")
+
+        # Character Tags Section
+        character_tag_label = ctk.CTkLabel(tags_tab, text="Assigned Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+
+        # Wrapping frame for assigned character tags
+        assigned_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        assigned_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        assigned_character_frame_wrapper.pack_propagate(False)
+
+        # Assigned Tags Frame inside wrapper
+        self.assigned_character_tags_frame = ctk.CTkScrollableFrame(assigned_character_frame_wrapper)
+        self.assigned_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Potential Tags Frame
+        all_character_tag_label = ctk.CTkLabel(tags_tab, text="Available Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        all_character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+
+        # Wrapping frame for potential character tags
+        potential_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        potential_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        potential_character_frame_wrapper.pack_propagate(False)
+
+        # Potential Tags Frame inside wrapper
+        self.potential_character_tags_frame = ctk.CTkScrollableFrame(potential_character_frame_wrapper)
+        self.potential_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Search/Add Input for Character Tags
+        self.character_tag_search_var = ctk.StringVar()
+        character_tag_frame = ctk.CTkFrame(tags_tab, fg_color="transparent")
+        character_tag_frame.pack(fill="x", padx=10, pady=(1, 2))
+
+        character_tag_entry = ctk.CTkEntry(
+            character_tag_frame,
+            textvariable=self.character_tag_search_var,
+            placeholder_text="Search or add character tags...",
+            width=260,
+        )
+        character_tag_entry.pack(side="left", fill="x", expand=True)
+
+        # Bind search entry events
+        character_tag_entry.bind("<KeyRelease>", lambda e: self.update_tag_search_results(
+            self.character_tag_search_var.get(), "character", self.potential_character_tags_frame
+        ))
+        character_tag_entry.bind("<Return>", lambda e: self.add_tag(self.character_tag_search_var.get(), "character"))
+
+        # Add Tag Button
+        character_add_tag_button = ctk.CTkButton(
+            character_tag_frame,
+            text="+",
+            width=30,
+            command=lambda: self.add_tag_from_input(self.character_tag_search_var, "character")
+        )
+        character_add_tag_button.pack(side="left", padx=(5, 0))
+
+        # Load all potential character tags by default
+        self.update_tag_search_results("", "character", self.potential_character_tags_frame)
+
+        # Model/API Tags Section
+        model_api_tag_label = ctk.CTkLabel(tags_tab, text="Assigned Model/API Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        model_api_tag_label.pack(pady=2, padx=5, anchor="w")
+
+        # Wrapping frame for assigned model/API tags
+        assigned_model_api_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        assigned_model_api_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        assigned_model_api_frame_wrapper.pack_propagate(False)
+
+        # Assigned Tags Frame inside wrapper
+        self.assigned_model_api_tags_frame = ctk.CTkScrollableFrame(assigned_model_api_frame_wrapper)
+        self.assigned_model_api_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Model/API Tags Section
+        all_model_api_tag_label = ctk.CTkLabel(tags_tab, text="Available Model/API Tags:", font=ctk.CTkFont(size=12, weight="bold"))
+        all_model_api_tag_label.pack(pady=2, padx=5, anchor="w")
+
+        # Wrapping frame for potential model/API tags
+        potential_model_api_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        potential_model_api_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+
+        # Disable propagation of size changes
+        potential_model_api_frame_wrapper.pack_propagate(False)
+
+        # Potential Tags Frame inside wrapper
+        self.potential_model_api_tags_frame = ctk.CTkScrollableFrame(potential_model_api_frame_wrapper)
+        self.potential_model_api_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Search/Add Input for Model/API Tags
+        self.model_api_tag_search_var = ctk.StringVar()
+        model_api_tag_frame = ctk.CTkFrame(tags_tab, fg_color="transparent")
+        model_api_tag_frame.pack(fill="x", padx=0, pady=(1, 1))
+
+        model_api_tag_entry = ctk.CTkEntry(
+            model_api_tag_frame,
+            textvariable=self.model_api_tag_search_var,
+            placeholder_text="Search or add model/api tags...",
+            placeholder_text_color="#ffffff",
+            width=260,
+        )
+        model_api_tag_entry.pack(side="left", fill="x", expand=True)
+
+        # Bind search entry events
+        model_api_tag_entry.bind("<KeyRelease>", lambda e: self.update_tag_search_results(
+            self.model_api_tag_search_var.get(), "model_api", self.potential_model_api_tags_frame
+        ))
+        model_api_tag_entry.bind("<Return>", lambda e: self.add_tag(self.model_api_tag_search_var.get(), "model_api"))
+
+        # Add Tag Button
+        model_api_add_tag_button = ctk.CTkButton(
+            model_api_tag_frame,
+            text="+",
+            width=30,
+            command=lambda: self.add_tag_from_input(self.model_api_tag_search_var, "model_api")
+        )
+        model_api_add_tag_button.pack(side="left", padx=(5, 0))
+
+        # Load all potential model/API tags by default
+        self.update_tag_search_results("", "model_api", self.potential_model_api_tags_frame)
+
+
+        # Metadata Tab
+        metadata_tab = tabview.add("MetaData")
+        self.main_file_label = ctk.CTkLabel(metadata_tab, text="Main File: ")
+        self.main_file_label.pack(anchor="w", padx=10, pady=5)
+
+        self.created_date_label = ctk.CTkLabel(metadata_tab, text="Created: ")
+        self.created_date_label.pack(anchor="w", padx=10, pady=5)
+
+        self.last_modified_date_label = ctk.CTkLabel(metadata_tab, text="Last Modified: ")
+        self.last_modified_date_label.pack(anchor="w", padx=10, pady=5)
+
+        # Save Button
+        self.save_button = ctk.CTkButton(self.edit_panel, text="Save Changes", command=self.save_changes)
+        self.save_button.pack(pady=10, padx=10, fill="x")
+
+        # Bind mouse wheel scrolling for main scrollable frames
+        self.bind_mouse_wheel(self.scrollable_frame)  # Character list
+        self.bind_mouse_wheel(self.edit_panel)  # Edit panel
+        self.bind_mouse_wheel(self.extra_images_frame)  # Extra Images
+
+        # Related Characters
+        self.bind_mouse_wheel(self.related_characters_frame)
+
+        # Tags
+        self.bind_mouse_wheel(self.assigned_character_tags_frame)
+        self.bind_mouse_wheel(self.potential_character_tags_frame)
+        self.bind_mouse_wheel(self.assigned_model_api_tags_frame)
+        self.bind_mouse_wheel(self.potential_model_api_tags_frame)
+
+        # Automatically select the first character if none is selected
+        if not hasattr(self, "selected_character_id") and self.filtered_characters:
+            first_character_id = self.filtered_characters[0]["id"]
+            self.select_character_by_id(first_character_id)
+
 
     def bind_mouse_wheel(self, frame, parent_frame=None):
         """Bind the mouse wheel event to a CTkScrollableFrame and prioritize it when hovered."""

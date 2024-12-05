@@ -2,6 +2,11 @@ import customtkinter as ctk
 from tkinter import filedialog
 
 class SettingsModal:
+    def __init__(self, parent, db_manager, update_settings_callback):
+        self.parent = parent
+        self.db_manager = db_manager
+        self.update_settings_callback = update_settings_callback
+
     def open(self):
         # Create the modal window
         self.modal = ctk.CTkToplevel(self.parent)
@@ -64,25 +69,26 @@ class SettingsModal:
             self.path_entry.insert(0, folder_path)
 
     def save_settings(self):
-            """Save the updated settings to the database."""
-            appearance_mode = self.appearance_option.get().lower()
-            sillytavern_path = self.path_entry.get()
-            default_sort_order = self.sort_order_option.get()
+        """Save the updated settings to the database."""
+        appearance_mode = self.appearance_option.get().lower()
+        sillytavern_path = self.path_entry.get()
+        default_sort_order = self.sort_order_option.get()
 
-            # Update the database
-            self.db_manager.set_setting("appearance_mode", appearance_mode)
-            self.db_manager.set_setting("sillytavern_path", sillytavern_path)
-            self.db_manager.set_setting("default_sort_order", default_sort_order)
+        # Update the database
+        self.db_manager.set_setting("appearance_mode", appearance_mode)
+        self.db_manager.set_setting("sillytavern_path", sillytavern_path)
+        self.db_manager.set_setting("default_sort_order", default_sort_order)
 
-            # Callback to update settings in the main app
-            self.update_settings_callback({
-                "appearance_mode": appearance_mode,
-                "sillytavern_path": sillytavern_path,
-                "default_sort_order": default_sort_order,
-            })
+        # Callback to update settings in the main app
+        self.update_settings_callback({
+            "appearance_mode": appearance_mode,
+            "sillytavern_path": sillytavern_path,
+            "default_sort_order": default_sort_order,
+        })
 
-            # Close the modal
-            self.modal.destroy()
+        # Close the modal
+        self.modal.destroy()
+
 
     @staticmethod
     def _center_modal(window):
