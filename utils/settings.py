@@ -17,6 +17,9 @@ class SettingsModal:
         self.modal.transient(self.parent)
         self.modal.grab_set()
 
+        # Align the modal to the top-left corner of the parent window
+        self._align_modal_top_left(self.modal, self.parent)
+
         # Load current settings
         current_appearance = self.db_manager.get_setting("appearance_mode", "dark")
         current_path = self.db_manager.get_setting("sillytavern_path", "")
@@ -89,13 +92,18 @@ class SettingsModal:
         # Close the modal
         self.modal.destroy()
 
-
     @staticmethod
-    def _center_modal(window):
-        """Center the modal on the screen."""
+    def _align_modal_top_left(window, parent):
+        """Align the modal to the top-left corner of the parent window."""
         window.update_idletasks()
         width = window.winfo_width()
         height = window.winfo_height()
-        x = (window.winfo_screenwidth() // 2) - (width // 2)
-        y = (window.winfo_screenheight() // 2) - (height // 2)
+
+        # Get the position of the parent window
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+
+        # Set the modal position relative to the top-left corner of the parent window
+        x = parent_x
+        y = parent_y
         window.geometry(f"{width}x{height}+{x}+{y}")

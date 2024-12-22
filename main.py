@@ -132,12 +132,11 @@ class CharacterCardManagerApp(ctk.CTk):
         self.import_button = ctk.CTkButton(self.sidebar, text="Import Cards From SillyTavern", command=self.open_import_modal)
         self.import_button.pack(pady=10, padx=10, fill="x")
 
-        self.export_button = ctk.CTkButton(self.sidebar, text="Export Data", command=self.export_data)
-        self.export_button.pack(pady=10, padx=10, fill="x")
+        # self.export_button = ctk.CTkButton(self.sidebar, text="Export Data", command=self.export_data)
+        # self.export_button.pack(pady=10, padx=10, fill="x")
 
         self.settings_button = ctk.CTkButton(self.sidebar, text="Settings", command=self.open_settings)
         self.settings_button.pack(pady=10, padx=10, fill="x")
-
 
     def create_character_list(self):
         """Create the middle column for the character list."""
@@ -161,7 +160,32 @@ class CharacterCardManagerApp(ctk.CTk):
         # Bind the search entry to the debounce function
         self.search_var.trace_add("write", lambda *args: self.debounce_search())
 
-        # Sort Dropdown
+            # Character Tags Filter Button
+        self.character_tags_filter = []
+        char_tags_button = ctk.CTkButton(
+            self.character_list_frame,
+            text="Filter by Character Tags",
+            command=lambda: self.open_tag_filter_modal("Character Tags", "character", self.character_tags_filter),
+        )
+        char_tags_button.pack(pady=5, padx=10)
+
+        # Model/API Tags Filter Button
+        self.model_api_tags_filter = []
+        model_tags_button = ctk.CTkButton(
+            self.character_list_frame,
+            text="Filter by Model/API Tags",
+            command=lambda: self.open_tag_filter_modal("Model/API Tags", "model_api", self.model_api_tags_filter),
+        )
+        model_tags_button.pack(pady=5, padx=10)
+
+        # Scrollable Frame for Characters
+        self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Navigation Buttons
+        self.create_navigation_buttons()
+
+                # Sort Dropdown
         default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
         self.sort_var = ctk.StringVar(value=default_sort_order)
         sort_dropdown = ctk.CTkOptionMenu(
@@ -171,13 +195,6 @@ class CharacterCardManagerApp(ctk.CTk):
             command=self.sort_character_list
         )
         sort_dropdown.pack(pady=(5, 10), padx=10)
-
-        # Scrollable Frame for Characters
-        self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
-        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Navigation Buttons
-        self.create_navigation_buttons()
 
         # Initialize Card Count Label early
         self.card_count_label = ctk.CTkLabel(
@@ -199,6 +216,46 @@ class CharacterCardManagerApp(ctk.CTk):
         # Display characters
         self.display_characters()
 
+    def open_tag_filter_modal(self, title, category, filter_list):
+        """Open a multi-select modal for tag filtering."""
+        tags = self.get_all_tags(category)
+        MultiSelectModal(
+            self,
+            title,
+            tags,
+            filter_list,
+            callback=lambda selected: self.apply_tag_filter(category, selected),
+        )
+
+    def apply_tag_filter(self, category, selected):
+        """Apply the selected tags as filters."""
+        if category == "character":
+            self.character_tags_filter = selected
+        elif category == "model_api":
+            self.model_api_tags_filter = selected
+        self.filter_character_list()
+
+    def get_all_tags(self, category):
+        """Fetch all unique tags for the given category."""
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+        cursor.execute("SELECT DISTINCT name FROM tags WHERE category = ?", (category,))
+        tags = [row[0] for row in cursor.fetchall()]
+        connection.close()
+        return tags
+
+    def character_has_tags(self, character_id, tags, category):
+        """Check if a character has all the selected tags."""
+        connection = sqlite3.connect(self.db_manager.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT t.name FROM tags t
+            JOIN character_tags ct ON t.id = ct.tag_id
+            WHERE ct.character_id = ? AND t.category = ?
+        """, (character_id, category))
+        character_tags = {row[0] for row in cursor.fetchall()}
+        connection.close()
+        return all(tag in character_tags for tag in tags)
 
 
     def sort_character_list(self, sort_option):
@@ -291,27 +348,25 @@ class CharacterCardManagerApp(ctk.CTk):
         self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
         
     def filter_character_list(self):
-        """Filter the character list based on the search query."""
+        """Filter the character list based on search query and selected tags."""
         query = self.search_var.get().lower().strip()
+        selected_character_tags = self.character_tags_filter
+        selected_model_api_tags = self.model_api_tags_filter
 
-        if not query:
-            # If the search bar is empty, display all characters
-            self.filtered_characters = self.all_characters
-        else:
-            # Preprocess the query by removing non-alphanumeric characters
-            processed_query = re.sub(r'\W+', '', query)
+        self.filtered_characters = [
+            char for char in self.all_characters
+            if (not query or query in char["name"].lower())
+            and (not selected_character_tags or self.character_has_tags(char["id"], selected_character_tags, "character"))
+            and (not selected_model_api_tags or self.character_has_tags(char["id"], selected_model_api_tags, "model_api"))
+        ]
 
-            # Filter characters by name
-            self.filtered_characters = [
-                char for char in self.all_characters
-                if processed_query in re.sub(r'\W+', '', char["name"].lower())
-            ]
-
-        # Recalculate total pages and reset to the first page
+        # Recalculate pages and refresh the display
         self.total_pages = (len(self.filtered_characters) + self.items_per_page - 1) // self.items_per_page
         self.current_page = 0
         self.display_characters()
         self.update_navigation_buttons()
+
+
 
     def debounce_search(self, *args):
         """Debounce the search input to prevent rapid calls."""
@@ -1384,39 +1439,29 @@ class CharacterCardManagerApp(ctk.CTk):
         # Create the modal window using CTkToplevel
         self.add_character_window = ctk.CTkToplevel(self)
         self.add_character_window.title("Add Character")
-        self.add_character_window.geometry("400x500")
-
-        # API Import Section
-        api_frame = ctk.CTkFrame(self.add_character_window)
-        api_frame.pack(fill="x", pady=10, padx=10)
-
-        api_label = ctk.CTkLabel(api_frame, text="AICC Card ID:", anchor="w")
-        api_label.pack(side="left", padx=5)
-
-        self.card_id_entry = ctk.CTkEntry(api_frame, placeholder_text="e.g., AICC/aicharcards/the-game-master", width=240)
-        self.card_id_entry.pack(side="left", padx=5)
-
-        import_button = ctk.CTkButton(api_frame, text="Import", command=self.import_aicc_card)
-        import_button.pack(side="left", padx=5)
+        self.add_character_window.geometry("400x350")
 
         # Ensure the modal stays on top of the main window
         self.add_character_window.transient(self)  # Set to be a child of the main window
         self.add_character_window.grab_set()       # Block interaction with the main window
 
+        # Align the modal to the top-left corner of the main window
+        self._align_modal_top_left(self.add_character_window)
+
         # Scrollable Frame for the Form
         scrollable_frame = ctk.CTkScrollableFrame(self.add_character_window, width=380, height=380)
-        scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=10, pady=2)
 
         # Message Banner
         self.add_character_message_banner = ctk.CTkLabel(
             self.add_character_window, text="", height=30, fg_color="#FFCDD2", corner_radius=5, text_color="black"
         )
-        self.add_character_message_banner.pack(fill="x", padx=10, pady=(5, 0))
+        self.add_character_message_banner.pack(fill="x", padx=10, pady=(2, 0))
         self.add_character_message_banner.pack_forget()  # Hide initially
 
         # File Upload Section
         file_frame = ctk.CTkFrame(scrollable_frame)
-        file_frame.pack(fill="x", pady=10, padx=10, anchor="w")
+        file_frame.pack(fill="x", pady=2, padx=10, anchor="w")
 
         file_label = ctk.CTkLabel(file_frame, text="Upload File:", anchor="w")
         file_label.pack(side="left", padx=5)
@@ -1429,7 +1474,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Character Name Section
         name_frame = ctk.CTkFrame(scrollable_frame)
-        name_frame.pack(fill="x", pady=5, padx=10)
+        name_frame.pack(fill="x", pady=2, padx=10)
 
         name_label = ctk.CTkLabel(name_frame, text="Character Name:", anchor="w")
         name_label.pack(side="left", padx=5)
@@ -1461,19 +1506,38 @@ class CharacterCardManagerApp(ctk.CTk):
         # Submit Button
         submit_button = ctk.CTkButton(scrollable_frame, text="Add Character", command=self.save_character_with_message)
         submit_button.pack(pady=5, padx=10, anchor="w")
+        
+        # API Import Section
+        api_frame = ctk.CTkFrame(self.add_character_window)
+        api_frame.pack(fill="x", pady=10, padx=10)
 
-        # Center the modal on the screen
-        self.add_character_window.update_idletasks()
-        window_width = self.add_character_window.winfo_width()
-        window_height = self.add_character_window.winfo_height()
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        position_top = int((screen_height / 2) - (window_height / 2))
-        position_right = int((screen_width / 2) - (window_width / 2))
-        self.add_character_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
+        api_label = ctk.CTkLabel(api_frame, text="AICC Card ID:", anchor="w")
+        api_label.pack(side="left", padx=5)
 
-                # Inside add_character modal
-        self.bind_mouse_wheel(scrollable_frame)  # Add Character Modal's scrollable frame
+        self.card_id_entry = ctk.CTkEntry(api_frame, placeholder_text="e.g., AICC/aicharcards/the-game-master", width=240)
+        self.card_id_entry.pack(side="left", padx=5)
+
+        import_button = ctk.CTkButton(api_frame, text="Import", command=self.import_aicc_card)
+        import_button.pack(side="left", padx=5)
+
+        # Bind the mouse wheel to the scrollable frame
+        self.bind_mouse_wheel(scrollable_frame)
+
+    def _align_modal_top_left(self, window):
+        """Align the modal to the top-left corner of the main window."""
+        window.update_idletasks()
+        width = window.winfo_width()
+        height = window.winfo_height()
+
+        # Get the position of the parent window
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+
+        # Set the modal position relative to the top-left corner of the parent window
+        x = parent_x
+        y = parent_y
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
 
     def import_aicc_card(self):
         """Import a card from AICC and handle only the file import."""
@@ -2184,6 +2248,109 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_message(f"Failed to unlink character: {e}", "error")
+
+class MultiSelectModal(ctk.CTkToplevel):
+    def __init__(self, parent, title, options, selected_options, callback):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("350x400")
+        self.parent = parent
+        self.options = options
+        self.selected_options = set(selected_options)
+        self.callback = callback
+        self.items_per_page = 20
+        self.current_page = 0
+        self.total_pages = (len(options) + self.items_per_page - 1) // self.items_per_page
+
+        # Ensure the modal stays on top of the parent window
+        self.transient(self.parent)
+        self.grab_set()
+
+        # Align the modal to the top-left corner of the parent window
+        self._align_modal_top_left(self, self.parent)
+
+        # Header with pagination controls
+        header_frame = ctk.CTkFrame(self)
+        header_frame.pack(fill="x", pady=5, padx=10)
+
+        self.page_label = ctk.CTkLabel(header_frame, text=f"Page {self.current_page + 1} of {self.total_pages}")
+        self.page_label.pack(side="left", padx=5)
+
+        prev_button = ctk.CTkButton(header_frame, text="Previous", width=80, command=self.prev_page)
+        prev_button.pack(side="left", padx=5)
+
+        next_button = ctk.CTkButton(header_frame, text="Next", width=80, command=self.next_page)
+        next_button.pack(side="right", padx=5)
+
+        # Scrollable frame for displaying options
+        self.scrollable_frame = ctk.CTkScrollableFrame(self, height=300)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Save button
+        save_button = ctk.CTkButton(self, text="Save", command=self.save_selection)
+        save_button.pack(pady=10)
+
+        # Dictionary to store checkboxes
+        self.check_vars = {}
+
+        # Display the first page
+        self.display_page()
+
+
+    def display_page(self):
+        """Display the current page of options."""
+        # Clear the existing content in the scrollable frame
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        start_index = self.current_page * self.items_per_page
+        end_index = min(start_index + self.items_per_page, len(self.options))
+
+        for option in self.options[start_index:end_index]:
+            var = self.check_vars.get(option, ctk.BooleanVar(value=option in self.selected_options))
+            checkbox = ctk.CTkCheckBox(self.scrollable_frame, text=option, variable=var, command=self.update_selection)
+            checkbox.pack(anchor="w", padx=10, pady=5)
+            self.check_vars[option] = var
+
+        # Update pagination label
+        self.page_label.configure(text=f"Page {self.current_page + 1} of {self.total_pages}")
+
+    def update_selection(self):
+        """Update selected options based on checkbox states."""
+        self.selected_options = {option for option, var in self.check_vars.items() if var.get()}
+
+    def save_selection(self):
+        """Save selected options and invoke callback."""
+        self.callback(self.selected_options)
+        self.destroy()
+
+    def prev_page(self):
+        """Go to the previous page if available."""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.display_page()
+
+    def next_page(self):
+        """Go to the next page if available."""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.display_page()
+
+    @staticmethod
+    def _align_modal_top_left(window, parent):
+        """Align the modal to the top-left corner of the parent window."""
+        window.update_idletasks()
+        width = window.winfo_width()
+        height = window.winfo_height()
+
+        # Get the position of the parent window
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+
+        # Set the modal position relative to the top-left corner of the parent window
+        x = parent_x
+        y = parent_y
+        window.geometry(f"{width}x{height}+{x}+{y}")
 
 
 if __name__ == "__main__":
