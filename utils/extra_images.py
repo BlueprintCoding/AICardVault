@@ -213,17 +213,21 @@ class ExtraImagesManager:
 
         image_name, image_note, created_date, last_modified_date = result
 
+        # Determine the image path
+        character_folder = os.path.join("CharacterCards", self.get_character_name(), "ExtraImages")
+        image_path = os.path.join(character_folder, f"{image_name}.png")
+
         # Create a modal window
         self.edit_image_window = ctk.CTkToplevel(self.master)
         self.edit_image_window.title("Edit Image")
-        self.edit_image_window.geometry("400x300")
+        self.edit_image_window.geometry("400x500")
 
         # Ensure the modal stays on top of the main window
         self.edit_image_window.transient(self.master)  # Set to be a child of the main window
         self.edit_image_window.grab_set()  # Block interaction with the main window
 
         # Image Name Section
-        name_frame = ctk.CTkFrame(self.edit_image_window)  # Create a frame for the row
+        name_frame = ctk.CTkFrame(self.edit_image_window)
         name_frame.pack(fill="x", pady=10, padx=10)
 
         name_label = ctk.CTkLabel(name_frame, text="Image Name:", anchor="w")
@@ -250,6 +254,19 @@ class ExtraImagesManager:
             ),
         )
         save_button.pack(pady=10, padx=10)
+
+        # Display Image Section
+        try:
+            img = Image.open(image_path)
+            img.thumbnail((300, img.height))  # Resize to a max width of 300, keeping aspect ratio
+            ctk_image = ctk.CTkImage(img, size=(300, img.height))
+
+            image_label = ctk.CTkLabel(self.edit_image_window, image=ctk_image, text="")
+            image_label.image = ctk_image  # Keep a reference to avoid garbage collection
+            image_label.pack(pady=(10, 10))  # Add some spacing around the image
+        except Exception as e:
+            print(f"Error loading image: {e}")
+            # Optionally, show a placeholder or error message
 
         # Center the modal on the screen
         self.edit_image_window.update_idletasks()
