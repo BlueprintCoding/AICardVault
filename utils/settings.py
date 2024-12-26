@@ -1,5 +1,7 @@
+from pathlib import Path
 import customtkinter as ctk
 from tkinter import filedialog
+
 
 class SettingsModal:
     def __init__(self, parent, db_manager, update_settings_callback):
@@ -69,23 +71,23 @@ class SettingsModal:
         folder_path = filedialog.askdirectory()
         if folder_path:
             self.path_entry.delete(0, "end")
-            self.path_entry.insert(0, folder_path)
+            self.path_entry.insert(0, Path(folder_path))
 
     def save_settings(self):
         """Save the updated settings to the database."""
         appearance_mode = self.appearance_option.get().lower()
-        sillytavern_path = self.path_entry.get()
+        sillytavern_path = Path(self.path_entry.get())
         default_sort_order = self.sort_order_option.get()
 
         # Update the database
         self.db_manager.set_setting("appearance_mode", appearance_mode)
-        self.db_manager.set_setting("sillytavern_path", sillytavern_path)
+        self.db_manager.set_setting("sillytavern_path", str(sillytavern_path))
         self.db_manager.set_setting("default_sort_order", default_sort_order)
 
         # Callback to update settings in the main app
         self.update_settings_callback({
             "appearance_mode": appearance_mode,
-            "sillytavern_path": sillytavern_path,
+            "sillytavern_path": str(sillytavern_path),
             "default_sort_order": default_sort_order,
         })
 

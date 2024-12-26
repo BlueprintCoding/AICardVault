@@ -1,5 +1,5 @@
 # extra_images.py
-import os
+from pathlib import Path
 import sqlite3
 import shutil
 from datetime import datetime
@@ -10,7 +10,7 @@ from PIL import Image
 class ExtraImagesManager:
     def __init__(self, master, db_path, get_character_name_callback, show_message_callback):
         self.master = master  # Main application window
-        self.db_path = db_path  # Path to the database
+        self.db_path = Path(db_path)  # Path to the database
         self.get_character_name = get_character_name_callback
         self.show_message = show_message_callback
 
@@ -43,10 +43,10 @@ class ExtraImagesManager:
             frame.pack(fill="x", padx=5, pady=5)
             frame.grid_columnconfigure(0, weight=0)  # Image column
             frame.grid_columnconfigure(1, weight=1)  # Text and buttons column
-
             # Create thumbnail
-            character_folder = os.path.join("CharacterCards", self.get_character_name(), "ExtraImages")
-            image_path = os.path.join(character_folder, f"{image_name}.png")
+
+            character_folder = Path("CharacterCards") / self.get_character_name() / "ExtraImages"
+            image_path = character_folder / f"{image_name}.png"
             thumbnail = create_thumbnail(image_path)
 
             # Thumbnail Label
@@ -108,7 +108,7 @@ class ExtraImagesManager:
 
     def save_image(self, selected_character_id, image_path_entry, image_name_entry, image_notes_textbox, extra_images_frame, create_thumbnail, modal_window):
         """Save the image to the character folder and database."""
-        file_path = image_path_entry.get()
+        file_path = Path(image_path_entry.get())
         image_name = image_name_entry.get().strip()
         image_note = image_notes_textbox.get("1.0", "end").strip()
 
@@ -147,11 +147,11 @@ class ExtraImagesManager:
                 return
 
             character_name = result[0]
-            character_folder = os.path.join("CharacterCards", character_name, "ExtraImages")
-            os.makedirs(character_folder, exist_ok=True)
+            character_folder = Path("CharacterCards") / character_name / "ExtraImages"
+            character_folder.mkdir(parents=True, exist_ok=True)
 
             # Copy the image to the folder
-            image_path = os.path.join(character_folder, f"{image_name}.png")  # Assuming PNG format for simplicity
+            image_path = character_folder / f"{image_name}.png"  # Assuming PNG format for simplicity
             shutil.copy(file_path, image_path)
 
             # Save metadata to the database
@@ -214,9 +214,9 @@ class ExtraImagesManager:
         image_name, image_note, created_date, last_modified_date = result
 
         # Determine the image path
-        character_folder = os.path.join("CharacterCards", self.get_character_name(), "ExtraImages")
-        image_path = os.path.join(character_folder, f"{image_name}.png")
-
+        character_folder = Path("CharacterCards") / self.get_character_name() / "ExtraImages"
+        image_path = character_folder / f"{image_name}.png"
+        
         # Create a modal window
         self.edit_image_window = ctk.CTkToplevel(self.master)
         self.edit_image_window.title("Edit Image")
@@ -316,14 +316,14 @@ class ExtraImagesManager:
                 return
 
             character_name = result[0]
-            character_folder = os.path.join("CharacterCards", character_name, "ExtraImages")
-            original_file_path = os.path.join(character_folder, f"{original_image_name}.png")
-            updated_file_path = os.path.join(character_folder, f"{updated_image_name}.png")
+            character_folder = Path("CharacterCards") / character_name / "ExtraImages"
+            original_file_path = character_folder / f"{original_image_name}.png"
+            updated_file_path = character_folder / f"{updated_image_name}.png"
 
             # Rename the file if the name has changed
             if original_image_name != updated_image_name:
-                if os.path.exists(original_file_path):
-                    os.rename(original_file_path, updated_file_path)
+                if original_file_path.exists():
+                    original_file_path.rename(updated_file_path)
                     print(f"Renamed file: {original_file_path} -> {updated_file_path}")
                 else:
                     print(f"Original file not found: {original_file_path}")
@@ -396,12 +396,12 @@ class ExtraImagesManager:
                 return
 
             character_name = result[0]
-            character_folder = os.path.join("CharacterCards", character_name, "ExtraImages")
-            image_path = os.path.join(character_folder, f"{image_name}.png")
+            character_folder = Path("CharacterCards") / character_name / "ExtraImages"
+            image_path = character_folder / f"{image_name}.png"
 
             # Delete the image file
-            if os.path.exists(image_path):
-                os.remove(image_path)
+            if image_path.exists():
+                image_path.unlink()
                 print(f"Deleted file: {image_path}")
             else:
                 print(f"File not found: {image_path}")

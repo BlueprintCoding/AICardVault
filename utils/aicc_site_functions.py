@@ -1,7 +1,7 @@
+from pathlib import Path
 import requests
 from urllib.parse import quote
 import platform
-import os
 import locale
 
 class AICCImporter:
@@ -46,14 +46,14 @@ class AICCImporter:
 
             # Save the PNG file locally
             filename = f"{title}.png"
-            filepath = os.path.join(os.getcwd(), filename)
+            filepath = Path.cwd() / filename
 
-            with open(filepath, "wb") as f:
+            with filepath.open("wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
             # Validate the file's integrity using PNG magic bytes
-            with open(filepath, "rb") as f:
+            with filepath.open("rb") as f:
                 header = f.read(8)
                 if not header.startswith(b"\x89PNG\r\n\x1a\n"):
                     raise ValueError("Downloaded file is not a valid PNG.")
@@ -61,7 +61,7 @@ class AICCImporter:
             print(f"Downloaded {filename} successfully.")
 
             # Return only the file path
-            return filepath
+            return str(filepath)
 
         except requests.exceptions.RequestException as e:
             print(f"HTTP Error: {e}")

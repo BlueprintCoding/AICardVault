@@ -1,5 +1,5 @@
 import json
-import os
+from pathlib import Path
 import customtkinter as ctk
 from customtkinter import CTkInputDialog
 from tkinter import messagebox
@@ -12,36 +12,48 @@ class TagsManager:
         self.sillytavern_path = sillytavern_path
         self.tags_data = []
         self.tag_map = {}
-        self.sort_criteria = "# of Characters (Desc)"  # Default sort criteria
-        self.bulk_delete_mode = False  # Toggle for bulk delete mode
-        self.selected_tags = set()  # Set to store selected tags for bulk deletion
-        self.selected_tag_frame = None  # Initialize the selected tag frame
-        self.on_tags_updated = on_tags_updated  # Callback to notify tag updates
+        self.sort_criteria = "# of Characters (Desc)"
+        self.bulk_delete_mode = False
+        self.selected_tags = set()
+        self.selected_tag_frame = None
+        self.on_tags_updated = on_tags_updated
+        self.current_page = 0  # Track the current page
+        self.tags_per_page = 10  # Number of tags per page
 
     def open(self):
         """Open the tags management modal."""
-        settings_path = os.path.join(self.sillytavern_path, "settings.json")
-        if not os.path.exists(settings_path):
+        settings_path = Path(self.sillytavern_path) / "settings.json"
+        if not settings_path.exists():
             messagebox.showerror("Error", "Settings.json not found. The SillyTavern path is incorrect or the file is missing.")
             return
 
-        # Load settings.json
-        with open(settings_path, "r") as f:
-            settings = json.load(f)
+        try:
+            with settings_path.open("r", encoding="utf-8") as f:
+                settings = json.load(f)
             self.tags_data = settings.get("tags", [])
             self.tag_map = settings.get("tag_map", {})
-            self.filtered_tags = self.tags_data.copy()  # Initialize filtered tags
+            self.filtered_tags = self.tags_data.copy()
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            messagebox.showerror("Error", f"Failed to load settings.json: {e}")
+            return
 
-        # Create the modal window
+        # Create modal window
         self.modal = ctk.CTkToplevel(self.master)
         self.modal.title("Manage SillyTavern Tags")
         self.modal.geometry("800x400")
         self.modal.transient(self.master)
         self.modal.grab_set()
 
-        # Controls Row
+        # Configure grid weights
+        self.modal.grid_columnconfigure(0, weight=1)  # controls frame
+        self.modal.grid_columnconfigure(1, weight=1)  # tags frame
+        self.modal.grid_columnconfigure(2, weight=2)  # characters frame
+        self.modal.grid_rowconfigure(1, weight=1)     # middle row for content
+
+        # Controls Frame
         controls_frame = ctk.CTkFrame(self.modal)
-        controls_frame.pack(fill="x", padx=10, pady=10)
+        controls_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
+        controls_frame.grid_columnconfigure((0,1,2,3), weight=1)
 
         # Search Bar
         self.search_var = ctk.StringVar()
@@ -51,7 +63,7 @@ class TagsManager:
             placeholder_text="Search tags...",
             width=200
         )
-        search_entry.pack(side="left", padx=5)
+        search_entry.grid(row=0, column=0, padx=5)
         self.search_var.trace_add("write", lambda *args: self.filter_tags())
 
         # Sort Dropdown
@@ -63,7 +75,7 @@ class TagsManager:
             values=sort_options,
             command=self.sort_tags
         )
-        sort_dropdown.pack(side="left", padx=5)
+        sort_dropdown.grid(row=0, column=1, padx=5)
 
         # Add Tag Button
         add_tag_button = ctk.CTkButton(
@@ -71,7 +83,7 @@ class TagsManager:
             text="Add Tag",
             command=self.add_new_tag
         )
-        add_tag_button.pack(side="left", padx=5)
+        add_tag_button.grid(row=0, column=2, padx=5)
 
         # Bulk Delete Button
         self.bulk_delete_button = ctk.CTkButton(
@@ -79,21 +91,134 @@ class TagsManager:
             text="Bulk Delete",
             command=self.toggle_bulk_delete_mode
         )
-        self.bulk_delete_button.pack(side="left", padx=5)
+        self.bulk_delete_button.grid(row=0, column=3, padx=5)
 
         # Tags List
         self.tags_frame = ctk.CTkScrollableFrame(self.modal, width=400)
-        self.tags_frame.pack(side="left", fill="y", padx=10, pady=10)
+        self.tags_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
 
         # Characters Frame
         self.characters_frame = ctk.CTkScrollableFrame(self.modal)
-        self.characters_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        self.characters_frame.grid(row=1, column=2, rowspan=2, sticky="nsew", padx=10, pady=10)
+
+        # Pagination Frame - Now in row 2, below tags_frame
+        self.pagination_frame = ctk.CTkFrame(self.modal)
+        self.pagination_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0,10))
+        self.pagination_frame.grid_columnconfigure((0,1,2), weight=1)
+
+
+        # Pagination Controls
+        self.prev_button = ctk.CTkButton(
+            self.pagination_frame,
+            text="Previous",
+            command=self.go_to_previous_page
+        )
+        self.prev_button.grid(row=0, column=0, padx=1, pady=5)
+
+        self.page_label = ctk.CTkLabel(
+            self.pagination_frame,
+            text="",
+            anchor="center"
+        )
+        self.page_label.grid(row=0, column=1, padx=2, pady=5)
+
+        self.next_button = ctk.CTkButton(
+            self.pagination_frame,
+            text="Next",
+            command=self.go_to_next_page
+        )
+        self.next_button.grid(row=0, column=2, padx=1, pady=5)
 
         # Default sort and populate tags
         self.sort_tags(self.sort_var.get())
 
+    def add_pagination_controls(self):
+        """Update pagination controls."""
+        self.page_label.configure(text=f"Page {self.current_page + 1} of {self.total_pages()}")
+        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.current_page < self.total_pages() - 1 else "disabled")
+
+ 
+    def populate_tags(self):
+            """Display the list of tags with pagination."""
+            for widget in self.tags_frame.winfo_children():
+                widget.destroy()
+
+            # Calculate start and end indices for the current page
+            start_index = self.current_page * self.tags_per_page
+            end_index = start_index + self.tags_per_page
+            visible_tags = self.filtered_tags[start_index:end_index]
+
+            # Call add_pagination_controls AFTER clearing the tags but BEFORE populating new tags
+            self.add_pagination_controls()
+            
+            # Display the tags for the current page
+            for tag in visible_tags:
+                tag_id = tag["id"]
+                tag_name = tag["name"]
+                character_count = sum(1 for char_tags in self.tag_map.values() if tag_id in char_tags)
+
+                # Frame for each tag
+                tag_frame = ctk.CTkFrame(self.tags_frame)
+                tag_frame.pack(fill="x", padx=5, pady=5)
+
+                if self.bulk_delete_mode:
+                    # Checkbox for bulk delete
+                    checkbox_var = ctk.BooleanVar(value=tag_id in self.selected_tags)
+                    checkbox = ctk.CTkCheckBox(
+                        tag_frame,
+                        text="",
+                        variable=checkbox_var,
+                        command=lambda tag_id=tag_id, var=checkbox_var: self.toggle_tag_selection(tag_id, var)
+                    )
+                    checkbox.pack(side="left", padx=5)
+
+                # Tag Name
+                tag_label = ctk.CTkLabel(tag_frame, text=f"{tag_name} ({character_count})")
+                tag_label.pack(side="left", padx=5)
+
+                if not self.bulk_delete_mode:
+                    # Rename Button
+                    rename_button = ctk.CTkButton(
+                        tag_frame,
+                        text="Rename",
+                        width=60,
+                        command=lambda tag=tag: self.rename_tag(tag)
+                    )
+                    rename_button.pack(side="right", padx=5)
+
+                    # Delete Button
+                    delete_button = ctk.CTkButton(
+                        tag_frame,
+                        text="Delete",
+                        width=60,
+                        fg_color="red",
+                        hover_color="darkred",
+                        command=lambda tag=tag: self.delete_tag(tag)
+                    )
+                    delete_button.pack(side="right", padx=5)
+
+                # Clickable label to load characters
+                tag_label.bind("<Button-1>", lambda e, tag_id=tag_id, frame=tag_frame: self.show_characters(tag_id, frame))
+
+    def total_pages(self):
+        """Calculate the total number of pages."""
+        return (len(self.filtered_tags) + self.tags_per_page - 1) // self.tags_per_page
+
+    def go_to_previous_page(self):
+        """Navigate to the previous page."""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.populate_tags()
+
+    def go_to_next_page(self):
+        """Navigate to the next page."""
+        if self.current_page < self.total_pages() - 1:
+            self.current_page += 1
+            self.populate_tags()
+
     def filter_tags(self):
-        """Filter tags based on the search input."""
+        """Filter tags based on the search input and reset to the first page."""
         query = self.search_var.get().strip().lower()
         if not query:
             self.filtered_tags = self.tags_data.copy()
@@ -101,65 +226,8 @@ class TagsManager:
             self.filtered_tags = [
                 tag for tag in self.tags_data if query in tag["name"].lower()
             ]
-
-        # Refresh the tags list
+        self.current_page = 0  # Reset to the first page
         self.populate_tags()
-
-
-    def populate_tags(self):
-        """Display the list of tags with character counts."""
-        for widget in self.tags_frame.winfo_children():
-            widget.destroy()
-
-        for tag in self.filtered_tags:
-            tag_id = tag["id"]
-            tag_name = tag["name"]
-
-            # Count characters associated with this tag
-            character_count = sum(1 for char_tags in self.tag_map.values() if tag_id in char_tags)
-
-            # Frame for each tag
-            tag_frame = ctk.CTkFrame(self.tags_frame)
-            tag_frame.pack(fill="x", padx=5, pady=5)
-
-            if self.bulk_delete_mode:
-                # Checkbox for bulk delete
-                checkbox_var = ctk.BooleanVar(value=tag_id in self.selected_tags)
-                checkbox = ctk.CTkCheckBox(
-                    tag_frame,
-                    text="",
-                    variable=checkbox_var,
-                    command=lambda tag_id=tag_id, var=checkbox_var: self.toggle_tag_selection(tag_id, var)
-                )
-                checkbox.pack(side="left", padx=5)
-
-            # Tag Name
-            tag_label = ctk.CTkLabel(tag_frame, text=f"{tag_name} ({character_count})")
-            tag_label.pack(side="left", padx=5)
-
-            if not self.bulk_delete_mode:
-                # Rename Button
-                rename_button = ctk.CTkButton(
-                    tag_frame,
-                    text="Rename",
-                    width=60,
-                    command=lambda tag=tag: self.rename_tag(tag)
-                )
-                rename_button.pack(side="right", padx=5)
-
-                # Delete Button
-                delete_button = ctk.CTkButton(
-                    tag_frame,
-                    text="Delete",
-                    width=60,
-                    fg_color="red",
-                    hover_color="darkred",
-                    command=lambda tag=tag: self.delete_tag(tag)
-                )
-                delete_button.pack(side="right", padx=5)
-
-            # Clickable label to load characters
-            tag_label.bind("<Button-1>", lambda e, tag_id=tag_id, frame=tag_frame: self.show_characters(tag_id, frame))
 
     def add_new_tag(self):
         """Add a new tag to the tags JSON."""
@@ -400,17 +468,20 @@ class TagsManager:
 
     def save_changes(self):
         """Save changes to settings.json."""
-        settings_path = os.path.join(self.sillytavern_path, "settings.json")
-        with open(settings_path, "r") as f:
-            settings = json.load(f)
+        settings_path = Path(self.sillytavern_path) / "settings.json"
+        try:
+            with settings_path.open("r", encoding="utf-8") as f:
+                settings = json.load(f)
 
-        settings["tags"] = self.tags_data
-        settings["tag_map"] = self.tag_map
+            settings["tags"] = self.tags_data
+            settings["tag_map"] = self.tag_map
 
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=4)
+            with settings_path.open("w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=4)
 
-        if self.on_tags_updated:
-            self.on_tags_updated()
+            if self.on_tags_updated:
+                self.on_tags_updated()
 
-        messagebox.showinfo("Success", "Changes saved successfully.")
+            messagebox.showinfo("Success", "Changes saved successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings.json: {e}")

@@ -1,4 +1,7 @@
 @echo off
+REM Set the working directory to the folder of this script
+cd /d "%~dp0"
+
 REM Check if virtual environment exists
 if not exist "venv" (
     echo Creating virtual environment...
@@ -20,6 +23,7 @@ REM Start the Python application
 echo Starting the program...
 python main.py
 pause
+
 REM Deactivate virtual environment after program closes
 echo Deactivating virtual environment...
 deactivate

@@ -1,8 +1,11 @@
 import customtkinter as ctk
 from customtkinter import CTkFont
 from PIL import Image, ImageTk
+from pathlib import Path
 import os
 import re 
+import subprocess
+import platform
 import shutil
 import sqlite3
 import time
@@ -16,7 +19,8 @@ from utils.import_characters import ImportModal
 from utils.aicc_site_functions import AICCImporter
 from utils.st_tag_manager import TagsManager
 from utils.st_tag_manager_edit_panel import SillyTavernTagManager
-
+from utils.import_lorebooks import LorebookManager
+from tkinter.filedialog import askopenfilename
 
 class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
@@ -38,8 +42,9 @@ class CharacterCardManagerApp(ctk.CTk):
           # Load settings from the database
         self.settings = {
             "appearance_mode": self.db_manager.get_setting("appearance_mode", "dark"),
-            "sillytavern_path": self.db_manager.get_setting("sillytavern_path", ""),
+            "sillytavern_path": Path(self.db_manager.get_setting("sillytavern_path", "")).resolve(),
         }
+        self.tag_manager = SillyTavernTagManager(self.settings["sillytavern_path"])
 
         # Initialize SillyTavernTagManager after settings are loaded
         self.tag_manager = SillyTavernTagManager(self.settings["sillytavern_path"])
@@ -58,6 +63,10 @@ class CharacterCardManagerApp(ctk.CTk):
             get_character_name_callback=self.get_character_name,
             show_message_callback=self.show_message,
         )
+
+        db_path=self.db_manager.db_path
+        self.lorebook_manager = LorebookManager(self.settings["sillytavern_path"], db_path)
+        self.selected_lorebook_id = None  # Initialize with None
 
         # Layout
         self.grid_columnconfigure(0, weight=1)  # Sidebar grows slightly
@@ -95,17 +104,23 @@ class CharacterCardManagerApp(ctk.CTk):
         self.sort_var.set(updated_settings["default_sort_order"])
         self.sort_character_list(updated_settings["default_sort_order"])
 
-            # Reinitialize the tag manager if the SillyTavern path has changed
+        # Reinitialize the tag manager if the SillyTavern path has changed
         if "sillytavern_path" in updated_settings:
-            print("Reinitializing SillyTavernTagManager with new path...")
-            self.tag_manager = SillyTavernTagManager(updated_settings["sillytavern_path"])
+            new_sillytavern_path = Path(updated_settings["sillytavern_path"].strip())
+            if not new_sillytavern_path.exists():
+                self.show_message("The updated SillyTavern path does not exist. Please check your settings.", "error")
+                return
 
-        print("Settings updated:", updated_settings)
+            print("Reinitializing SillyTavernTagManager with the new path...")
+            self.tag_manager = SillyTavernTagManager(new_sillytavern_path)
 
     def open_import_modal(self):
-        sillytavern_path = self.db_manager.get_setting("sillytavern_path", "")
-        if not sillytavern_path:
-            self.show_message("SillyTavern path not configured. Set it in Settings.", "error")
+        # Retrieve the sillytavern_path from the database and normalize it
+        sillytavern_path = Path(self.db_manager.get_setting("sillytavern_path", "").strip())
+
+        # Optional: Validate if the path exists, and raise an error or show a message if it doesn't
+        if not sillytavern_path.exists():
+            self.show_message("The SillyTavern path is not configured or does not exist. Please set it correctly in the settings.", "error")
             return
 
         def refresh_character_list():
@@ -150,40 +165,15 @@ class CharacterCardManagerApp(ctk.CTk):
         self.import_button = ctk.CTkButton(self.sidebar, text="Manage SillyTavern Tags", command=self.open_import_tags_modal)
         self.import_button.pack(pady=10, padx=10, fill="x")
 
+        self.manage_lorebooks_button = ctk.CTkButton(self.sidebar, text="Manage Lorebooks", command=self.open_lorebooks_modal)
+        self.manage_lorebooks_button.pack(pady=10, padx=10, fill="x")
+
+
         # self.export_button = ctk.CTkButton(self.sidebar, text="Export Data", command=self.export_data)
         # self.export_button.pack(pady=10, padx=10, fill="x")
 
         self.settings_button = ctk.CTkButton(self.sidebar, text="Settings", command=self.open_settings)
         self.settings_button.pack(pady=10, padx=10, fill="x")
-
-    def open_import_tags_modal(self):
-        """Open the modal to manage SillyTavern tags."""
-        def refresh_tags_callback():
-            self.refresh_tags_for_all_characters()
-
-        tags_manager = TagsManager(
-            self,
-            self.db_manager.get_setting("sillytavern_path", ""),
-            on_tags_updated=refresh_tags_callback
-        )
-        tags_manager.open()
-
-
-    def refresh_tags_for_all_characters(self):
-        """Refresh tags for all characters and update the UI."""
-        try:
-            print("Refreshing tags for all characters...")
-            self.tag_manager.reload_tags()  # Reload the tag data
-            self.clear_tags()  # Clear existing tags in the UI
-            self.display_characters()  # Refresh the character list
-            self.update_navigation_buttons()  # Update navigation buttons
-            # Reload the currently selected character (if any)
-            if hasattr(self, "selected_character_id") and self.selected_character_id:
-                self.select_character_by_id(self.selected_character_id)  # Re-select the character
-            self.show_message("Tags refreshed for all characters.", "success")
-        except Exception as e:
-            self.show_message(f"Error refreshing tags: {str(e)}", "error")
-
 
 
     def create_character_list(self):
@@ -360,6 +350,38 @@ class CharacterCardManagerApp(ctk.CTk):
             self.update_navigation_buttons()
             self.scrollable_frame._parent_canvas.yview_moveto(0)
 
+
+######################################################################################################
+################################# Manage SillyTavern tags ############################################
+######################################################################################################
+    def open_import_tags_modal(self):
+        """Open the modal to manage SillyTavern tags."""
+        def refresh_tags_callback():
+            self.refresh_tags_for_all_characters()
+
+        tags_manager = TagsManager(
+            self,
+            self.db_manager.get_setting("sillytavern_path", ""),
+            on_tags_updated=refresh_tags_callback
+        )
+        tags_manager.open()
+
+
+    def refresh_tags_for_all_characters(self):
+        """Refresh tags for all characters and update the UI."""
+        try:
+            print("Refreshing tags for all characters...")
+            self.tag_manager.reload_tags()  # Reload the tag data
+            self.clear_tags()  # Clear existing tags in the UI
+            self.display_characters()  # Refresh the character list
+            self.update_navigation_buttons()  # Update navigation buttons
+            # Reload the currently selected character (if any)
+            if hasattr(self, "selected_character_id") and self.selected_character_id:
+                self.select_character_by_id(self.selected_character_id)  # Re-select the character
+            self.show_message("Tags refreshed for all characters.", "success")
+        except Exception as e:
+            self.show_message(f"Error refreshing tags: {str(e)}", "error")
+
     def open_tag_filter_modal(self, title, filter_list):
         """Open a multi-select modal for tag filtering."""
         all_tags = self.get_associated_tags()  # Get tags with counts
@@ -525,7 +547,7 @@ class CharacterCardManagerApp(ctk.CTk):
             {
                 "id": row[0],
                 "name": row[1],
-                "image_path": os.path.join("CharacterCards", row[1], row[2]),
+                "image_path": str(Path("CharacterCards") / row[1] / row[2]),
                 "created_date": row[3],
                 "last_modified_date": row[4]
             }
@@ -1104,13 +1126,13 @@ class CharacterCardManagerApp(ctk.CTk):
 
         confirm = askyesno(
             title="Delete Character",
-            message="Are you sure you want to delete this character? This action cannot be undone.",
+            message="Are you sure you want to delete this character? THIS ALSO DELETES THE CHARACTER IN SILLYTAVERN. This action cannot be undone.",
         )
         if confirm:
             self.delete_character()
 
     def delete_character(self):
-        """Delete the selected character from the database, app folder, symlink, and SillyTavern."""
+        """Delete the selected character from the database, app folder, and SillyTavern."""
         try:
             # Ensure we have a valid character ID
             if not hasattr(self, "selected_character_id"):
@@ -1135,31 +1157,22 @@ class CharacterCardManagerApp(ctk.CTk):
             character_name, main_file = result
 
             # Paths
-            app_folder_path = os.path.join("CharacterCards", character_name)
-            sillytavern_file_path = os.path.join(self.settings["sillytavern_path"], "characters", main_file)
-            symlink_path = os.path.join(app_folder_path, main_file)
+            app_folder_path = Path("CharacterCards") / character_name
+            sillytavern_file_path = Path(self.settings["sillytavern_path"]).resolve() / "characters" / main_file
 
             # Delete the app folder
-            if os.path.exists(app_folder_path):
+            if app_folder_path.exists():
                 shutil.rmtree(app_folder_path)
                 print(f"Deleted app folder: {app_folder_path}")
             else:
                 print(f"App folder not found: {app_folder_path}")
 
-            # Delete the real PNG file in SillyTavern
-            if os.path.exists(sillytavern_file_path):
-                os.remove(sillytavern_file_path)
+            # Delete the PNG file in SillyTavern
+            if sillytavern_file_path.exists():
+                sillytavern_file_path.unlink()
                 print(f"Deleted file in SillyTavern: {sillytavern_file_path}")
             else:
                 print(f"File not found in SillyTavern: {sillytavern_file_path}")
-
-            # Delete the symlink in the app folder
-            if os.path.islink(symlink_path):
-                os.unlink(symlink_path)
-                print(f"Deleted symlink: {symlink_path}")
-            elif os.path.exists(symlink_path):
-                print(f"{symlink_path} is not a symlink but exists. Deleting.")
-                os.remove(symlink_path)
 
             # Delete the record from the database
             connection = sqlite3.connect(self.db_manager.db_path)
@@ -1183,7 +1196,6 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_message(f"Failed to delete character: {str(e)}", "error")
-
 
 
     def remove_character_from_list(self, character_id):
@@ -1386,14 +1398,15 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def browse_file(self):
         """Open a file dialog to select an image or JSON file."""
-        from tkinter.filedialog import askopenfilename
+        
         file_path = askopenfilename(filetypes=[("Image/JSON Files", "*.png *.jpg *.jpeg *.json")])
         if file_path:
+            # Update file path entry
             self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, file_path)
 
-            # Default character name to file name
-            default_name = os.path.splitext(os.path.basename(file_path))[0]
+            # Default character name to file name (without extension)
+            default_name = Path(file_path).stem
             self.add_character_name_entry.delete(0, "end")
             self.add_character_name_entry.insert(0, default_name)
 
@@ -1618,8 +1631,11 @@ class CharacterCardManagerApp(ctk.CTk):
                 self.load_tags_for_character(name)
 
                 # Update the currently selected character in the sidebar
-                image_path = os.path.join("CharacterCards", name, main_file) if main_file else "assets/default_thumbnail.png"
-                self.update_currently_selected_character(name, image_path)
+                image_path = (
+                    Path("CharacterCards") / name / main_file
+                    if main_file else Path("assets/default_thumbnail.png")
+                )
+                self.update_currently_selected_character(name, str(image_path))
 
                 # Highlight the selected character in the list
                 self.highlight_selected_character(character_id)
@@ -1763,10 +1779,9 @@ class CharacterCardManagerApp(ctk.CTk):
                 widget.bind("<Button-1>", lambda e, char_id=character_id: self.select_character_by_id(char_id))
                 return
 
-
     def save_character_with_message(self):
-        """Save the character to the database and SillyTavern, with symlink in the app."""
-        file_path = self.file_path_entry.get().strip()  # File browser path
+        """Save the character to the database and SillyTavern, referencing SillyTavern PNGs directly."""
+        file_path = Path(self.file_path_entry.get().strip())
         character_name = self.add_character_name_entry.get().strip()
         character_notes = self.add_character_notes_textbox.get("1.0", "end").strip()
         misc_notes = self.add_misc_notes_textbox.get("1.0", "end").strip()
@@ -1777,7 +1792,7 @@ class CharacterCardManagerApp(ctk.CTk):
             return
 
         # Validate that either a file or an imported PNG exists
-        if not file_path and not hasattr(self, "imported_png_path"):
+        if not file_path.exists():
             self.show_add_character_message("Please select a file or import a card via the API.", "error")
             return
 
@@ -1790,33 +1805,26 @@ class CharacterCardManagerApp(ctk.CTk):
             connection.close()
             return
 
-        # Paths
-        sillytavern_path = os.path.join(self.settings["sillytavern_path"], "characters")
-        app_character_dir = os.path.join("CharacterCards", character_name)
-
-        # Ensure SillyTavern's characters folder exists
-        os.makedirs(sillytavern_path, exist_ok=True)
+        # Ensure `sillytavern_path` is a Path object
+        sillytavern_path = Path(self.settings["sillytavern_path"]).resolve() / "characters"
+        app_character_dir = Path("CharacterCards") / character_name
+        sillytavern_path.mkdir(parents=True, exist_ok=True)
+        app_character_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             # Handle file from the file browser
             if file_path:
-                final_file_path = os.path.join(sillytavern_path, os.path.basename(file_path))
+                final_file_path = sillytavern_path / file_path.name
                 shutil.copy(file_path, final_file_path)
 
             # Handle imported PNG via API
-            elif hasattr(self, "imported_png_path") and os.path.exists(self.imported_png_path):
-                final_file_path = os.path.join(sillytavern_path, f"{character_name}.png")
+            elif hasattr(self, "imported_png_path") and Path(self.imported_png_path).exists():
+                final_file_path = sillytavern_path / f"{character_name}.png"
                 shutil.move(self.imported_png_path, final_file_path)
                 del self.imported_png_path  # Clean up the attribute after use
 
             else:
                 raise ValueError("No valid file found for saving.")
-
-            # Create the symlink in the app's folder
-            os.makedirs(app_character_dir, exist_ok=True)
-            symlink_path = os.path.join(app_character_dir, os.path.basename(final_file_path))
-            if not os.path.exists(symlink_path):
-                os.symlink(final_file_path, symlink_path)
 
             # Generate timestamps
             created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1827,7 +1835,7 @@ class CharacterCardManagerApp(ctk.CTk):
                 """INSERT INTO characters 
                 (name, main_file, notes, misc_notes, created_date, last_modified_date) 
                 VALUES (?, ?, ?, ?, ?, ?)""",
-                (character_name, os.path.basename(final_file_path), character_notes, misc_notes, created_date, last_modified_date),
+                (character_name, str(final_file_path), character_notes, misc_notes, created_date, last_modified_date),
             )
             connection.commit()
 
@@ -1839,7 +1847,7 @@ class CharacterCardManagerApp(ctk.CTk):
             new_character = {
                 "id": new_character_id,
                 "name": character_name,
-                "image_path": symlink_path,
+                "image_path": str(final_file_path),  # Use the file directly in SillyTavern
                 "created_date": created_date,
                 "last_modified_date": last_modified_date,
             }
@@ -1853,11 +1861,12 @@ class CharacterCardManagerApp(ctk.CTk):
             self.select_character_by_id(new_character_id)
 
             # Show success message and close the modal
-            self.show_add_character_message("Character added and linked successfully!", "success")
+            self.show_add_character_message("Character added successfully!", "success")
             self.add_character_window.after(500, self.add_character_window.destroy())
 
         except Exception as e:
             self.show_add_character_message(f"Error saving character: {str(e)}", "error")
+
 
 
 
@@ -1961,7 +1970,7 @@ class CharacterCardManagerApp(ctk.CTk):
             {
                 "id": row[0],
                 "name": row[1],
-                "image_path": os.path.join("CharacterCards", row[1], row[2])
+                "image_path": str(Path("CharacterCards") / row[1] / row[2])
             }
             for row in rows
         ]
@@ -2081,77 +2090,71 @@ class CharacterCardManagerApp(ctk.CTk):
         # Mouse wheel scrolling
         self.bind_mouse_wheel(scrollable_frame)
 
-    
     def sync_cards_from_sillytavern(self):
-        """Sync cards from SillyTavern by creating symlinks for character PNGs, adding to the database, and refreshing the list."""
-        characters_path = os.path.join(self.settings["sillytavern_path"], "characters")
-        app_characters_path = "CharacterCards"
-
-        if not os.path.exists(characters_path):
-            self.show_message("SillyTavern path not configured or does not exist. Set it in Settings.", "error")
-            return
-
+        """Sync cards from SillyTavern."""
         try:
-            # Ensure the app's CharacterCards folder exists
-            os.makedirs(app_characters_path, exist_ok=True)
+            # Ensure paths are normalized and resolved
+            def sanitize_path(path: str):
+                return Path(path).resolve()
 
-            # Track whether new characters were added
+            characters_path = sanitize_path(self.settings["sillytavern_path"]) / "characters"
+            app_characters_path = Path("CharacterCards").resolve()
+
+            if not characters_path.exists():
+                self.show_message("SillyTavern path not configured or does not exist. Set it in Settings.", "error")
+                return
+
+            app_characters_path.mkdir(parents=True, exist_ok=True)
+
             new_characters_added = False
 
-            # Iterate through character PNGs in the SillyTavern folder
-            for png_file in os.listdir(characters_path):
-                if not png_file.endswith(".png"):
-                    continue
+            for png_file in characters_path.glob("*.png"):
+                character_name = png_file.stem
+                character_folder = app_characters_path / character_name
 
-                # Determine character name and paths
-                character_name = os.path.splitext(png_file)[0]
-                character_folder = os.path.join(app_characters_path, character_name)
-                source_file = os.path.join(characters_path, png_file)
-                target_file = os.path.join(character_folder, png_file)
+                # Ensure character folder exists for storing additional files
+                character_folder.mkdir(parents=True, exist_ok=True)
 
-                # Ensure the character folder exists
-                os.makedirs(character_folder, exist_ok=True)
+                # Database operations
+                with sqlite3.connect(self.db_manager.db_path) as connection:
+                    cursor = connection.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM characters WHERE name = ?", (character_name,))
+                    exists = cursor.fetchone()[0]
 
-                # Create symbolic link if it doesn't exist
-                if not os.path.exists(target_file):
-                    os.symlink(source_file, target_file)
-                    print(f"Symlink created: {source_file} -> {target_file}")
+                    if not exists:
+                        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute(
+                            """
+                            INSERT INTO characters (name, main_file, created_date, last_modified_date) 
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (character_name, str(png_file), created_date, created_date),
+                        )
+                        connection.commit()
+                        print(f"Character added to DB: {character_name}")
+                        new_characters_added = True
 
-                # Add character to the database if it doesn't already exist
-                connection = sqlite3.connect(self.db_manager.db_path)
-                cursor = connection.cursor()
-                cursor.execute(
-                    "SELECT COUNT(*) FROM characters WHERE name = ?",
-                    (character_name,),
-                )
-                exists = cursor.fetchone()[0]
+            print(f"New characters added: {new_characters_added}")
 
-                if not exists:
-                    # Insert the character into the database
-                    created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute(
-                        """
-                        INSERT INTO characters (name, main_file, created_date, last_modified_date) 
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (character_name, os.path.basename(png_file), created_date, created_date),
-                    )
-                    connection.commit()
-                    print(f"Character added to DB: {character_name}")
-                    new_characters_added = True
+            # Sync lorebooks
+            print("Starting lorebook synchronization...")
+            try:
+                lorebook_manager = LorebookManager(self.settings["sillytavern_path"], self.db_manager.db_path)
+                lorebook_manager.sync_lorebooks()
+                print("Lorebook synchronization completed.")
+            except Exception as e:
+                print(f"Error during lorebook sync: {e}")
+                self.show_message("Failed to sync lorebooks. Check logs for details.", "error")
 
-                connection.close()
-
-            print(f"new_characters_added: {new_characters_added}")    
-            if new_characters_added:
-                self.refresh_tags_after_sync()  # Use the new function
-
-                
+            # Refresh tags after sync
+            self.refresh_tags_after_sync()
             self.show_message("Sync completed successfully!", "success")
 
         except Exception as e:
+            print(f"Error during sync: {e}")
             self.show_message(f"Failed to sync cards: {e}", "error")
-            
+
+
     def refresh_tags_after_sync(self):
         """Refresh tags specifically after syncing new characters from SillyTavern."""
         try:
@@ -2172,15 +2175,16 @@ class CharacterCardManagerApp(ctk.CTk):
             # Update tag associations for all characters
             for character in self.all_characters:
                 character_name_png = f"{character['name']}.png"
-                
-                # Debug: Check if the character exists in the tag_map
-                if character_name_png not in self.tag_manager.tag_map:
-                    print(f"Character {character_name_png} not found in tag_map.")
+                normalized_name = self.tag_manager.normalize_filename(character_name_png)
+
+                # Debugging output
+                if normalized_name not in self.tag_manager.tag_map:
+                    print(f"Character {character_name_png} not found in tag_map after normalization.")
                     continue
 
                 associated_tags = [
                     tag["name"]
-                    for tag_id in self.tag_manager.tag_map.get(character_name_png, [])
+                    for tag_id in self.tag_manager.tag_map.get(normalized_name, [])
                     for tag in self.tag_manager.tags if tag["id"] == tag_id
                 ]
                 character["tags"] = associated_tags  # Update character tags in memory
@@ -2195,6 +2199,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_message(f"Error refreshing tags after sync: {str(e)}", "error")
+            print(f"Error refreshing tags after sync: {str(e)}", "error")
 
 
 
@@ -2263,11 +2268,577 @@ class CharacterCardManagerApp(ctk.CTk):
         except Exception as e:
             self.show_message(f"Failed to unlink character: {e}", "error")
 
+
+######################################################################################################
+######################################## Manage Lorebooks ############################################
+######################################################################################################
+
+    def open_lorebooks_modal(self):
+        """Open a modal to manage lorebooks."""
+        lorebooks_modal = ctk.CTkToplevel(self)
+        lorebooks_modal.title("Manage Lorebooks")
+        lorebooks_modal.geometry("1200x700")
+        lorebooks_modal.transient(self)
+        lorebooks_modal.grab_set()
+
+        # Configure layout
+        lorebooks_modal.grid_columnconfigure(0, weight=1)  # Left column for list
+        lorebooks_modal.grid_columnconfigure(1, weight=2)  # Right column for details
+        lorebooks_modal.grid_rowconfigure(0, weight=1)
+
+        # Left Column - Lorebooks List
+        list_frame = ctk.CTkFrame(lorebooks_modal, corner_radius=0)
+        list_frame.grid(row=0, column=0, sticky="nswe", padx=10, pady=10)
+
+        search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(
+            list_frame,
+            textvariable=search_var,
+            placeholder_text="Search lorebooks...",
+            width=300,
+        )
+        search_entry.pack(pady=(10, 5), padx=10)
+
+        sort_var = ctk.StringVar(value="A - Z")
+        sort_dropdown = ctk.CTkOptionMenu(
+            list_frame,
+            values=["A - Z", "Z - A", "Newest", "Oldest"],
+            variable=sort_var,
+            command=lambda order: sort_lorebooks(order),
+        )
+        sort_dropdown.pack(pady=(5, 10), padx=10)
+
+        scrollable_lorebooks = ctk.CTkScrollableFrame(list_frame)
+        scrollable_lorebooks.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Right Column - Details
+        details_frame = ctk.CTkFrame(lorebooks_modal, corner_radius=0)
+        details_frame.grid(row=0, column=1, sticky="nswe", padx=10, pady=10)
+
+        # Add a label at the top of the details panel for the lorebook name
+        lorebook_name_label = ctk.CTkLabel(details_frame, text="Select a Lorebook", font=("Arial", 16, "bold"))
+        lorebook_name_label.pack(pady=(10, 5), padx=10)
+
+        tabview = ctk.CTkTabview(details_frame)
+        tabview.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Notes Tab
+        notes_tab = tabview.add("Notes")
+        notes_label = ctk.CTkLabel(notes_tab, text="Lorebook Notes:")
+        notes_label.pack(pady=5, padx=10, anchor="w")
+
+        notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
+        notes_textbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+        misc_notes_label = ctk.CTkLabel(notes_tab, text="Miscellaneous Notes:")
+        misc_notes_label.pack(pady=5, padx=10, anchor="w")
+
+        misc_notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
+        misc_notes_textbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Images Tab
+        images_tab = tabview.add("Images")
+
+        # Scrollable frame for images
+        images_frame = ctk.CTkScrollableFrame(images_tab)
+        images_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Add image button
+        add_image_button = ctk.CTkButton(
+            images_tab,
+            text="Add Image",
+            command=lambda: self.add_image_modal(self.selected_lorebook_id, images_frame)
+        )
+        add_image_button.pack(pady=(10, 0))
+
+        # Metadata Tab
+        metadata_tab = tabview.add("Metadata")
+        metadata_label = ctk.CTkLabel(metadata_tab, text="Filename:")
+        metadata_label.pack(pady=5, padx=10, anchor="w")
+
+        filename_label = ctk.CTkLabel(metadata_tab, text="", wraplength=500)
+        filename_label.pack(pady=5, padx=10, anchor="w")
+
+        created_label = ctk.CTkLabel(metadata_tab, text="Created Date:")
+        created_label.pack(pady=5, padx=10, anchor="w")
+
+        last_modified_label = ctk.CTkLabel(metadata_tab, text="Last Modified Date:")
+        last_modified_label.pack(pady=5, padx=10, anchor="w")
+
+        # Save Button
+        save_button = ctk.CTkButton(
+            details_frame,
+            text="Save Changes",
+            command=lambda: self.handle_lorebook_save(
+                notes_textbox.get("1.0", "end").strip(),
+                misc_notes_textbox.get("1.0", "end").strip(),
+                filename_label.cget("text"),
+                scrollable_lorebooks,
+                notes_textbox,
+                misc_notes_textbox,
+                filename_label,
+                created_label,
+                last_modified_label,
+                lorebook_name_label,
+                images_frame
+            )
+        )
+        save_button.pack(pady=10, padx=10, fill="x")
+
+
+        # Load Lorebooks
+        lorebooks = self.lorebook_manager.get_lorebooks_list()
+        self.display_lorebooks(
+            scrollable_lorebooks, lorebooks,
+            on_select=lambda lorebook: self.load_lorebook_details(
+                lorebook,
+                notes_textbox,
+                misc_notes_textbox,
+                filename_label,
+                created_label,
+                last_modified_label,
+                lorebook_name_label,
+                images_frame,
+            )
+        )
+
+        # Sort and Filter
+        def sort_lorebooks(order):
+            # Sorting logic
+            pass
+
+        def filter_lorebooks(query):
+            # Filtering logic
+            pass
+
+        search_var.trace_add("write", lambda *args: filter_lorebooks(search_var.get()))
+
+        # Sort Lorebooks
+        def sort_lorebooks(order):
+            """Sort lorebooks based on the selected order."""
+            sorted_lorebooks = lorebooks.copy()
+            if order == "A - Z":
+                sorted_lorebooks = sorted(lorebooks, key=lambda x: x["filename"])
+            elif order == "Z - A":
+                sorted_lorebooks = sorted(lorebooks, key=lambda x: x["filename"], reverse=True)
+            elif order == "Newest":
+                sorted_lorebooks = sorted(lorebooks, key=lambda x: x["created_date"], reverse=True)
+            elif order == "Oldest":
+                sorted_lorebooks = sorted(lorebooks, key=lambda x: x["created_date"])
+            self.display_lorebooks(scrollable_lorebooks, sorted_lorebooks,
+                on_select=lambda lorebook: self.load_lorebook_details(
+                    lorebook, notes_textbox, misc_notes_textbox, filename_label, created_label, last_modified_label, lorebook_name_label, images_frame
+                )
+            )
+
+        # Bind search functionality
+        def filter_lorebooks(query):
+            """Filter lorebooks based on the search query."""
+            filtered_lorebooks = [
+                lorebook for lorebook in lorebooks
+                if query.lower() in Path(lorebook["filename"]).stem.lower()
+            ]
+            self.display_lorebooks(
+                scrollable_lorebooks, 
+                filtered_lorebooks,
+                on_select=lambda lorebook: self.load_lorebook_details(
+                    lorebook, notes_textbox, misc_notes_textbox, filename_label, created_label, last_modified_label, lorebook_name_label, images_frame
+                )
+            )
+
+        search_var.trace_add("write", lambda *args: filter_lorebooks(search_var.get()))
+
+    def refresh_lorebooks(
+        self, scrollable_lorebooks, notes_textbox, misc_notes_textbox, filename_label, created_label, last_modified_label, lorebook_name_label,images_frame
+    ):
+        """Refresh the lorebooks list and reload the selected lorebook."""
+        # Reload lorebooks from the database
+        updated_lorebooks = self.lorebook_manager.get_lorebooks_list()
+
+        # Redisplay the lorebooks list
+        self.display_lorebooks(
+            scrollable_lorebooks,
+            updated_lorebooks,
+            on_select=lambda lorebook: self.load_lorebook_details(
+                lorebook,
+                notes_textbox,
+                misc_notes_textbox,
+                filename_label,
+                created_label,
+                last_modified_label,
+                lorebook_name_label,
+                images_frame
+            )
+        )
+
+        # Reload the details of the currently selected lorebook
+        current_filename = filename_label.cget("text")
+        current_lorebook = next((lb for lb in updated_lorebooks if lb["filename"] == current_filename), None)
+        if current_lorebook:
+            self.load_lorebook_details(
+                current_lorebook,
+                notes_textbox,
+                misc_notes_textbox,
+                filename_label,
+                created_label,
+                last_modified_label,
+                lorebook_name_label,
+                images_frame
+            )
+
+
+    def display_lorebooks(self, frame, lorebooks, on_select):
+        """Display the list of lorebooks in the scrollable frame."""
+        # Clear previous widgets
+        for widget in frame.winfo_children():
+            widget.destroy()
+
+        # Add new buttons for each lorebook
+        for lorebook in lorebooks:
+            display_name = Path(lorebook["filename"]).stem  # Strip extension
+            button = ctk.CTkButton(
+                frame,
+                text=display_name,
+                command=lambda lb=lorebook: on_select(lb)
+            )
+            button.pack(fill="x", padx=10, pady=5)
+
+
+
+    def load_lorebook_details(
+        self, lorebook, notes_textbox, misc_notes_textbox, filename_label, created_label, last_modified_label, lorebook_name_label, images_frame
+    ):
+        """Load details of the selected lorebook into the modal."""
+        display_name = Path(lorebook["filename"]).stem  # Strip extension
+        lorebook_name_label.configure(text=display_name)  # Update the name label
+        filename_label.configure(text=lorebook["filename"])
+        notes_textbox.delete("1.0", "end")
+        notes_textbox.insert("1.0", lorebook["notes"])
+        misc_notes_textbox.delete("1.0", "end")
+        misc_notes_textbox.insert("1.0", lorebook["misc_notes"])
+        created_label.configure(text=f"Created Date: {lorebook['created_date']}")
+        last_modified_label.configure(text=f"Last Modified Date: {lorebook['last_modified_date']}")
+
+        # Set selected lorebook_id for image operations
+        self.selected_lorebook_id = lorebook.get("id")  # Ensure 'id' is included and handle missing key
+
+        # Load images
+        if self.selected_lorebook_id:
+            images = self.lorebook_manager.load_images(self.selected_lorebook_id)
+            self.display_images(images_frame, images, lorebook)
+
+
+    def display_images(self, frame, images, lorebook):
+        """Display images with thumbnails, name, notes, and buttons in the scrollable frame."""
+        for widget in frame.winfo_children():
+            widget.destroy()
+
+        # Extract the lorebook name and folder path
+        lorebook_name = Path(lorebook["filename"]).stem  # Remove the extension
+        lorebook_folder = Path("Lorebooks") / lorebook_name / "images"
+
+        for image in images:
+            image_id, image_name, image_note, created_date, last_modified_date = image
+            image_frame = ctk.CTkFrame(frame)
+            image_frame.pack(fill="x", padx=5, pady=5)
+
+            # Construct the path to the image
+            image_path = lorebook_folder / f"{image_name}.png"
+
+            # Generate the thumbnail
+            thumbnail = self.create_thumbnail(image_path)
+
+            # Thumbnail and Text Container
+            content_frame = ctk.CTkFrame(image_frame, fg_color="transparent")
+            content_frame.pack(side="left", fill="both", expand=True)
+
+            # Thumbnail Display
+            thumbnail_label = ctk.CTkLabel(content_frame, image=thumbnail, text="")
+            thumbnail_label.image = thumbnail  # Keep reference to prevent garbage collection
+            thumbnail_label.grid(row=0, column=0, rowspan=2, padx=5, pady=5)
+
+            # Image Name
+            image_label = ctk.CTkLabel(content_frame, text=image_name, font=("Arial", 14, "bold"))
+            image_label.grid(row=0, column=1, sticky="w", padx=10)
+
+            # Image Notes
+            notes_label = ctk.CTkLabel(content_frame, text=f"Notes: {image_note}", font=("Arial", 12))
+            notes_label.grid(row=1, column=1, sticky="w", padx=10)
+
+            # Buttons
+            buttons_frame = ctk.CTkFrame(image_frame, fg_color="transparent")
+            buttons_frame.pack(side="right", padx=10, pady=5)
+
+            edit_button = ctk.CTkButton(
+                buttons_frame,
+                text="View/Edit",
+                command=lambda img_id=image_id: self.edit_image(img_id, lorebook, frame)
+            )
+            edit_button.pack(pady=(0, 5))
+
+            delete_button = ctk.CTkButton(
+                buttons_frame,
+                text="Delete",
+                fg_color="red",
+                command=lambda img_id=image_id: self.delete_image(img_id, frame)
+            )
+            delete_button.pack()
+
+
+
+    def add_image_modal(self, lorebook_id, images_frame):
+        """Open a modal to add a new image."""
+        if not lorebook_id:
+            self.show_message("No lorebook selected to add an image.", "error")
+            return
+
+        modal = ctk.CTkToplevel(self)
+        modal.title("Add Image")
+        modal.geometry("300x400")
+        modal.transient(self)
+        modal.grab_set()
+
+        # File Path
+        path_label = ctk.CTkLabel(modal, text="Image Path:")
+        path_label.pack(pady=5, padx=10, anchor="w")
+        path_entry = ctk.CTkEntry(modal)
+        path_entry.pack(pady=5, padx=10, fill="x")
+
+        # Browse Button
+        browse_button = ctk.CTkButton(
+            modal, text="Browse", command=lambda: self.browse_image_file(path_entry)
+        )
+        browse_button.pack(pady=5, padx=10)
+
+        # Image Name
+        name_label = ctk.CTkLabel(modal, text="Image Name:")
+        name_label.pack(pady=5, padx=10, anchor="w")
+        name_entry = ctk.CTkEntry(modal)
+        name_entry.pack(pady=5, padx=10, fill="x")
+
+        # Image Notes
+        notes_label = ctk.CTkLabel(modal, text="Image Notes:")
+        notes_label.pack(pady=5, padx=10, anchor="w")
+        notes_textbox = ctk.CTkTextbox(modal, height=100)
+        notes_textbox.pack(pady=5, padx=10, fill="x")
+
+        # Save Button
+        save_button = ctk.CTkButton(
+            modal,
+            text="Save Image",
+            command=lambda: self.lorebook_manager.save_image(
+                lorebook_id,  # Lorebook ID
+                name_entry.get(),  # Image name
+                notes_textbox.get("1.0", "end").strip(),  # Image note
+                path_entry.get(),  # File path
+                modal,  # Modal window to close
+                lambda: self.refresh_images(images_frame, lorebook_id)  # Refresh images callback
+            )
+        )
+        save_button.pack(pady=10, padx=10)
+
+    def handle_lorebook_save(
+        self, notes, misc_notes, filename, scrollable_lorebooks, notes_textbox, misc_notes_textbox,
+        filename_label, created_label, last_modified_label, lorebook_name_label, images_frame
+    ):
+        """Handle saving lorebook changes and refresh the UI."""
+        result = self.lorebook_manager.save_lorebook_changes(
+            notes,
+            misc_notes,
+            filename,
+            refresh_lorebooks_callback=lambda: self.refresh_lorebooks(
+                scrollable_lorebooks,
+                notes_textbox,
+                misc_notes_textbox,
+                filename_label,
+                created_label,
+                last_modified_label,
+                lorebook_name_label,
+                images_frame
+            )
+        )
+
+        # Display success or error message
+        if "successfully" in result:
+            self.show_message(result, "success")
+        else:
+            self.show_message(result, "error")
+
+
+    def refresh_images(self, images_frame, lorebook_id, lorebook=None):
+        """Refresh the images displayed in the frame for the selected lorebook."""
+        if lorebook_id:
+            if not lorebook:
+                # Fetch the lorebook object if not provided
+                lorebook = next(
+                    (lb for lb in self.lorebook_manager.get_lorebooks_list() if lb["id"] == lorebook_id),
+                    None
+                )
+            if not lorebook:
+                self.show_message("Failed to fetch the lorebook details.", "error")
+                return
+
+            images = self.lorebook_manager.load_images(lorebook_id)
+            self.display_images(images_frame, images, lorebook)
+            self.show_message("Image list updated successfully!", "success")
+
+
+    def delete_image(self, image_id, images_frame):
+        """Delete an image from the selected lorebook."""
+        if not self.selected_lorebook_id:
+            self.show_message("No lorebook selected.", "error")
+            return
+
+        # Confirm deletion
+        from tkinter.messagebox import askyesno
+        confirm = askyesno("Delete Image", "Are you sure you want to delete this image? This action cannot be undone.")
+        if not confirm:
+            return
+
+        # Call LorebookManager to delete the image
+        success = self.lorebook_manager.delete_image(image_id, self.selected_lorebook_id)
+        if success:
+            self.show_message("Image deleted successfully.", "success")
+            # Pass the current lorebook to refresh the images list
+            lorebook = next(
+                (lb for lb in self.lorebook_manager.get_lorebooks_list() if lb["id"] == self.selected_lorebook_id),
+                None
+            )
+            self.refresh_images(images_frame, self.selected_lorebook_id, lorebook)
+        else:
+            self.show_message("Failed to delete the image.", "error")
+
+
+
+    def browse_image_file(self, entry_widget):
+        """Open a file dialog to select an image and update the entry widget."""
+        file_path = askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg")])
+        if file_path:
+            entry_widget.delete(0, "end")
+            entry_widget.insert(0, file_path)
+
+    def edit_image(self, image_id, lorebook, images_frame):
+        """Open a modal to edit image details."""
+        if not self.selected_lorebook_id:
+            self.show_message("No lorebook selected to edit the image.", "error")
+            return
+
+        # Fetch image details
+        image_details = self.lorebook_manager.get_image_details(image_id)
+        if not image_details:
+            self.show_message("Failed to retrieve image details.", "error")
+            return
+
+        image_name, image_note, created_date, last_modified_date = image_details
+
+        # Determine the image path
+        lorebook_name = Path(lorebook["filename"]).stem  # Remove .json from the filename
+        lorebook_folder = Path("Lorebooks") / lorebook_name / "images"
+        image_path = lorebook_folder / f"{image_name}.png"  # Construct the image path
+
+        # Create a modal window
+        modal = ctk.CTkToplevel(self)
+        modal.title("Edit Image")
+        modal.geometry("400x600")  # Adjust height to accommodate the image
+        modal.transient(self)
+        modal.grab_set()
+
+        # Image Name
+        name_label = ctk.CTkLabel(modal, text="Image Name:")
+        name_label.pack(pady=5, padx=10, anchor="w")
+        name_entry = ctk.CTkEntry(modal)
+        name_entry.insert(0, image_name)
+        name_entry.pack(pady=5, padx=10, fill="x")
+
+        # Image Notes
+        notes_label = ctk.CTkLabel(modal, text="Image Notes:")
+        notes_label.pack(pady=5, padx=10, anchor="w")
+        notes_textbox = ctk.CTkTextbox(modal, height=100)
+        notes_textbox.insert("1.0", image_note)
+        notes_textbox.pack(pady=5, padx=10, fill="x")
+
+        # Save Button
+        save_button = ctk.CTkButton(
+            modal,
+            text="Save Changes",
+            command=lambda: self.save_image_changes(
+                image_id, name_entry.get().strip(), notes_textbox.get("1.0", "end").strip(), modal, images_frame, lorebook
+            )
+        )
+        save_button.pack(pady=10, padx=10)
+
+        # Display Image Section
+        try:
+            print(f"Looking for image at: {image_path}")  # Debugging: Print the constructed path
+            if Path(image_path).exists():   # Ensure the image exists
+                img = Image.open(image_path)
+                img.thumbnail((300, 300))  # Resize to fit within 300x300
+                ctk_image = ctk.CTkImage(img, size=(300, img.height))
+
+                image_label = ctk.CTkLabel(modal, image=ctk_image, text="")
+                image_label.image = ctk_image  # Keep a reference to prevent garbage collection
+                image_label.pack(pady=(10, 10))  # Add some spacing around the image
+            else:
+                error_label = ctk.CTkLabel(modal, text="Image not found.", text_color="red")
+                error_label.pack(pady=(10, 10))
+        except Exception as e:
+            print(f"Error loading image: {e}")
+            error_label = ctk.CTkLabel(modal, text="Failed to load image.", text_color="red")
+            error_label.pack(pady=(10, 10))
+
+
+
+    def save_image_changes(self, image_id, new_image_name, new_image_note, modal, images_frame, lorebook):
+        """Save changes to an image, including renaming the file if necessary."""
+        if not new_image_name:
+            self.show_message("Image name cannot be empty.", "error")
+            return
+
+        # Fetch the existing image details
+        image_details = self.lorebook_manager.get_image_details(image_id)
+        if not image_details:
+            self.show_message("Failed to retrieve image details.", "error")
+            return
+
+        old_image_name, _, _, _ = image_details
+        
+        # Determine the lorebook folder and file paths
+        lorebook_name = Path(lorebook["filename"]).stem  # Remove .json from the filename
+        lorebook_folder = Path("Lorebooks") / lorebook_name / "images"
+        old_image_path = lorebook_folder / f"{old_image_name}.png"
+        new_image_path = lorebook_folder / f"{new_image_name}.png"
+
+        # Rename the file if the name has changed
+        if old_image_name != new_image_name:
+            try:
+                if old_image_path.exists():
+                    old_image_path.rename(new_image_path)
+                    print(f"Renamed image from {old_image_path} to {new_image_path}")
+                else:
+                    print(f"Old image file not found: {old_image_path}")
+            except Exception as e:
+                print(f"Error renaming image file: {e}")
+                self.show_message("Failed to rename the image file. Please check file permissions.", "error")
+                return
+
+        # Update the database
+        success = self.lorebook_manager.update_image_details(image_id, new_image_name, new_image_note)
+        if success:
+            self.show_message("Image updated successfully.", "success")
+            modal.destroy()
+            # Refresh the image list
+            self.refresh_images(images_frame, self.selected_lorebook_id, lorebook)
+        else:
+            self.show_message("Failed to update image.", "error")
+
+
+
+
 class MultiSelectModal(ctk.CTkToplevel):
     def __init__(self, parent, title, options, selected_options, callback):
         super().__init__(parent)
         self.title(title)
-        self.geometry("350x400")
+        self.geometry("400x400")
         self.parent = parent
         self.options = options
         self.selected_options = set(selected_options)
@@ -2353,6 +2924,7 @@ class MultiSelectModal(ctk.CTkToplevel):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.display_page()
+
 
     @staticmethod
     def _align_modal_top_left(window, parent):
