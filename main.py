@@ -1200,7 +1200,7 @@ class CharacterCardManagerApp(ctk.CTk):
             self.show_message(f"Failed to assign tag: {str(e)}", "error")
 
     def add_tag_from_input(self, tag_var, tag_type):
-        """Add a new tag based on user input."""
+        """Add a new tag based on user input and assign it to the currently selected character."""
         tag_name = tag_var.get().strip()
         if not tag_name:
             self.show_message("Tag name cannot be empty.", "error")
@@ -1211,20 +1211,28 @@ class CharacterCardManagerApp(ctk.CTk):
             self.tag_manager.add_tag(tag_name)
             self.tag_manager.save_tags()
 
-            # Refresh the tag search results
-            self.update_tag_search_results("")  # Clear search box and reload potential tags
-            self.show_message(f"Tag '{tag_name}' added successfully.", "success")
+            # Automatically assign the new tag to the selected character
+            if hasattr(self, "selected_character_name") and self.selected_character_name:
+                character_name = self.selected_character_name
+                if not character_name.endswith(".png"):
+                    character_name = f"{character_name}.png"
 
-            # Clear the input field
-            tag_var.set("")
+                self.tag_manager.assign_tag(tag_name, character_name)
+                self.tag_manager.save_tags()
 
-            # Refresh tags for the currently selected character
-            if hasattr(self, "selected_character_name"):
+                # Refresh assigned and potential tags
                 self.load_tags_for_character(self.selected_character_name)
+                self.show_message(f"Tag '{tag_name}' added and assigned to '{self.selected_character_name}' successfully.", "success")
+
+            else:
+                self.show_message("No character selected to assign the tag.", "error")
+
+            # Clear the input field and reset the search
+            tag_var.set("")
+            self.update_tag_search_results("")  # Reset search results
 
         except Exception as e:
-            self.show_message(f"Failed to add tag: {str(e)}", "error")
-
+            self.show_message(f"Failed to add and assign tag: {str(e)}", "error")
 
     def create_remove_tag_command(self, tag_name):
         """Create a remove tag command with properly bound arguments."""
