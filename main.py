@@ -34,6 +34,14 @@ class CharacterCardManagerApp(ctk.CTk):
         self.total_pages = 0  # Calculate based on the number of items
         self.filtered_characters = []  # This will hold the search results
         self.search_debounce_timer = None
+        
+        # edit panel tags vars
+        self.tags_per_page = 10
+        self.assigned_tags_current_page = 0
+        self.potential_tags_current_page = 0
+        # Initialize empty lists for tags
+        self.assigned_tags_full_list = []
+        self.potential_tags_full_list = []
 
         # Initialize database and file handler
         self.db_manager = DatabaseManager()
@@ -781,39 +789,52 @@ class CharacterCardManagerApp(ctk.CTk):
         self.related_characters_frame = ctk.CTkScrollableFrame(related_tab, height=200)
         self.related_characters_frame.pack(fill="both", expand=True, padx=0, pady=5)
 
-                
+                        
         # Tags Tab
         tags_tab = tabview.add("Tags")
 
-        # Character Tags Section
-        character_tag_label = ctk.CTkLabel(tags_tab, text="Assigned Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
-        character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+        # Assigned Tags Section
+        assigned_tag_label = ctk.CTkLabel(
+            tags_tab, text="Assigned Character Tags:", font=ctk.CTkFont(size=12, weight="bold")
+        )
+        assigned_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
 
-        # Wrapping frame for assigned character tags
-        assigned_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
-        assigned_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
-
-        # Disable propagation of size changes
-        assigned_character_frame_wrapper.pack_propagate(False)
+        # Wrapping frame for assigned tags
+        assigned_tags_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        assigned_tags_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+        assigned_tags_wrapper.pack_propagate(False)
 
         # Assigned Tags Frame inside wrapper
-        self.assigned_character_tags_frame = ctk.CTkScrollableFrame(assigned_character_frame_wrapper)
-        self.assigned_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        self.assigned_tags_frame = ctk.CTkScrollableFrame(assigned_tags_wrapper)
+        self.assigned_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
 
-        # Potential Tags Frame
-        all_character_tag_label = ctk.CTkLabel(tags_tab, text="Available Character Tags:", font=ctk.CTkFont(size=12, weight="bold"))
-        all_character_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
+        # Assigned Tags Pagination
+        self.assigned_tags_pagination = ctk.CTkFrame(tags_tab)
+        self.assigned_tags_pagination.pack(fill="x", padx=10, pady=(0, 10))
 
-        # Wrapping frame for potential character tags
-        potential_character_frame_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
-        potential_character_frame_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+        # Potential Tags Section
+        potential_tag_label = ctk.CTkLabel(
+            tags_tab, text="Available Character Tags:", font=ctk.CTkFont(size=12, weight="bold")
+        )
+        potential_tag_label.pack(pady=(2, 1), padx=5, anchor="w")
 
-        # Disable propagation of size changes
-        potential_character_frame_wrapper.pack_propagate(False)
+        # Wrapping frame for potential tags
+        potential_tags_wrapper = ctk.CTkFrame(tags_tab, height=150)  # Set desired height
+        potential_tags_wrapper.pack(fill="x", padx=10, pady=(0, 1))
+        potential_tags_wrapper.pack_propagate(False)
 
         # Potential Tags Frame inside wrapper
-        self.potential_character_tags_frame = ctk.CTkScrollableFrame(potential_character_frame_wrapper)
-        self.potential_character_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        self.potential_tags_frame = ctk.CTkScrollableFrame(potential_tags_wrapper)
+        self.potential_tags_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Potential Tags Pagination
+        self.potential_tags_pagination = ctk.CTkFrame(tags_tab)
+        self.potential_tags_pagination.pack(fill="x", padx=10, pady=(0, 10))
+
+        # Initialize pagination variables
+        self.tags_per_page = 10
+        self.assigned_tags_current_page = 0
+        self.potential_tags_current_page = 0
 
         # Search/Add Input for Character Tags
         self.character_tag_search_var = ctk.StringVar()
@@ -828,38 +849,58 @@ class CharacterCardManagerApp(ctk.CTk):
         )
         character_tag_entry.pack(side="left", fill="x", expand=True)
 
+        # Dropdown for sorting tags
+        self.sorting_var = ctk.StringVar(value="A-Z")  # Default sorting
+        sorting_frame = ctk.CTkFrame(tags_tab, fg_color="transparent")
+        sorting_frame.pack(fill="x", padx=10, pady=(5, 0))
+
+        sorting_label = ctk.CTkLabel(sorting_frame, text="Sort by:")
+        sorting_label.pack(side="left", padx=5)
+
+        sorting_dropdown = ctk.CTkOptionMenu(
+            sorting_frame,
+            variable=self.sorting_var,
+            values=["A-Z", "Z-A"],
+            command=lambda _: self.update_sorted_tags()
+        )
+        sorting_dropdown.pack(side="left", fill="x", expand=True, padx=5)
+
+
         # Bind search entry events
-        character_tag_entry.bind("<KeyRelease>", lambda e: self.update_tag_search_results(
-            self.character_tag_search_var.get(), self.potential_character_tags_frame))
-        character_tag_entry.bind("<Return>", lambda e: self.tag_manager.add_tag(self.character_tag_search_var.get(), "character"))
+        character_tag_entry.bind(
+            "<KeyRelease>",
+            lambda e: self.update_tag_search_results(self.character_tag_search_var.get())
+        )
+        character_tag_entry.bind(
+            "<Return>",
+            lambda e: self.add_tag_from_input(self.character_tag_search_var, "character")
+        )   
 
         # Add Tag Button
         character_add_tag_button = ctk.CTkButton(
             character_tag_frame,
             text="+",
             width=30,
-            command=lambda: self.add_tag_from_input(self.character_tag_search_var, "character")
+            command=lambda: self.add_tag_from_input(self.character_tag_search_var, "character"),
         )
         character_add_tag_button.pack(side="left", padx=(5, 0))
-                # Create a font with a specific size
-        small_font = CTkFont(size=10)
-        self.tag_search_label = ctk.CTkLabel(
-            tags_tab,
-            text="Use the box above to search or add a tag, click the plus button to create it after typing",
-            font=small_font,
-            wraplength=500,
-            justify="center",
-        )
-        self.tag_search_label.pack(anchor="center", padx=10, pady=0)
 
-
-        # Load all potential character tags by default
-        self.update_tag_search_results("", self.potential_character_tags_frame)
+        # Load initial data with pagination
+        self.update_assigned_tags()
+        self.update_potential_tags()
 
         # Metadata Tab
         metadata_tab = tabview.add("MetaData")
-        self.main_file_label = ctk.CTkLabel(metadata_tab, text="Main File: ")
-        self.main_file_label.pack(anchor="w", padx=10, pady=5)
+
+        self.main_file_label = ctk.CTkLabel(
+            metadata_tab, 
+            text="Main File: ", 
+            wraplength=400,  # Set wraplength to control text wrapping
+            anchor="w",      # Align text to the left
+            justify="left"   # Ensure the text wraps properly
+        )
+        self.main_file_label.pack(anchor="w", padx=10, pady=5, fill="x")  # Use fill="x" to allow horizontal expansion
+
 
         self.created_date_label = ctk.CTkLabel(metadata_tab, text="Created: ")
         self.created_date_label.pack(anchor="w", padx=10, pady=5)
@@ -891,8 +932,8 @@ class CharacterCardManagerApp(ctk.CTk):
         self.bind_mouse_wheel(self.related_characters_frame)
 
         # Tags
-        self.bind_mouse_wheel(self.assigned_character_tags_frame)
-        self.bind_mouse_wheel(self.potential_character_tags_frame)
+        self.bind_mouse_wheel(self.assigned_tags_frame)
+        self.bind_mouse_wheel(self.potential_tags_frame)
 
         # Automatically select the first character if none is selected
         if not hasattr(self, "selected_character_id") and self.filtered_characters:
@@ -941,14 +982,172 @@ class CharacterCardManagerApp(ctk.CTk):
 
         connection.close()
         return tags
-        
-    def update_tag_search_results(self, query, frame):
-        """Update the potential tag search results dynamically, excluding assigned tags."""
-        # Clear the frame
-        for widget in frame.winfo_children():
+    
+    def update_sorted_tags(self):
+        """Update the sorting of assigned and potential tags based on the dropdown selection."""
+        sort_order = self.sorting_var.get()
+
+        # Sort the full lists based on the selected order
+        if sort_order == "A-Z":
+            self.assigned_tags_full_list.sort()
+            self.potential_tags_full_list.sort()
+        elif sort_order == "Z-A":
+            self.assigned_tags_full_list.sort(reverse=True)
+            self.potential_tags_full_list.sort(reverse=True)
+
+        # Refresh the tag displays
+        self.update_assigned_tags()
+        self.update_potential_tags()
+
+
+    def update_assigned_tags(self):
+        """Update the assigned tags display with pagination."""
+        for widget in self.assigned_tags_frame.winfo_children():
             widget.destroy()
 
-        # Fetch all tags from the tag manager, sorted A-Z
+        # Get tags for the current page
+        start = self.assigned_tags_current_page * self.tags_per_page
+        end = start + self.tags_per_page
+        visible_tags = self.assigned_tags_full_list[start:end]
+
+        # Display tags for the current page
+        for tag in visible_tags:
+            tag_frame = ctk.CTkFrame(self.assigned_tags_frame, corner_radius=5)
+            tag_frame.pack(pady=2, padx=5, fill="x")
+
+            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
+            tag_label.pack(side="left", padx=5)
+
+            # Add a remove button
+            remove_button = ctk.CTkButton(
+                tag_frame,
+                text="X",
+                fg_color="red",
+                width=30,
+                command=lambda tag=tag: self.remove_tag_and_refresh(tag, self.selected_character_name)
+            )
+            remove_button.pack(side="right", padx=5)
+
+        # Reset scroll position to top
+        self.assigned_tags_frame._parent_canvas.yview_moveto(0)
+
+        # Update pagination controls
+        self.update_assigned_tags_pagination(len(self.assigned_tags_full_list))
+
+
+    def update_assigned_tags_pagination(self, total_tags):
+        """Update pagination controls for assigned tags."""
+        for widget in self.assigned_tags_pagination.winfo_children():
+            widget.destroy()
+
+        total_pages = (total_tags + self.tags_per_page - 1) // self.tags_per_page
+
+        prev_button = ctk.CTkButton(
+            self.assigned_tags_pagination,
+            text="Previous",
+            state="normal" if self.assigned_tags_current_page > 0 else "disabled",
+            command=lambda: self.change_assigned_tags_page(-1)
+        )
+        prev_button.pack(side="left", padx=5)
+
+        page_label = ctk.CTkLabel(
+            self.assigned_tags_pagination,
+            text=f"Page {self.assigned_tags_current_page + 1} of {total_pages}"
+        )
+        page_label.pack(side="left", padx=5)
+
+        next_button = ctk.CTkButton(
+            self.assigned_tags_pagination,
+            text="Next",
+            state="normal" if self.assigned_tags_current_page < total_pages - 1 else "disabled",
+            command=lambda: self.change_assigned_tags_page(1)
+        )
+        next_button.pack(side="left", padx=5)
+
+
+    def update_potential_tags(self):
+        """Update the potential tags display with pagination."""
+        for widget in self.potential_tags_frame.winfo_children():
+            widget.destroy()
+
+        # Get tags for the current page
+        start = self.potential_tags_current_page * self.tags_per_page
+        end = start + self.tags_per_page
+        visible_tags = self.potential_tags_full_list[start:end]
+
+        # Display tags for the current page
+        for tag in visible_tags:
+            tag_frame = ctk.CTkFrame(self.potential_tags_frame, corner_radius=5)
+            tag_frame.pack(pady=2, padx=5, fill="x")
+
+            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
+            tag_label.pack(side="left", padx=5)
+
+            # Add an assign button
+            add_button = ctk.CTkButton(
+                tag_frame,
+                text="+",
+                fg_color="green",
+                width=30,
+                command=lambda tag=tag: self.assign_tag_to_character(tag)
+            )
+            add_button.pack(side="right", padx=5)
+
+        # Reset scroll position to top
+        self.potential_tags_frame._parent_canvas.yview_moveto(0)
+
+        # Update pagination controls
+        self.update_potential_tags_pagination(len(self.potential_tags_full_list))
+        
+    def update_potential_tags_pagination(self, total_tags):
+        """Update pagination controls for potential tags."""
+        for widget in self.potential_tags_pagination.winfo_children():
+            widget.destroy()
+
+        total_pages = (total_tags + self.tags_per_page - 1) // self.tags_per_page
+
+        prev_button = ctk.CTkButton(
+            self.potential_tags_pagination,
+            text="Previous",
+            state="normal" if self.potential_tags_current_page > 0 else "disabled",
+            command=lambda: self.change_potential_tags_page(-1)
+        )
+        prev_button.pack(side="left", padx=5)
+
+        page_label = ctk.CTkLabel(
+            self.potential_tags_pagination,
+            text=f"Page {self.potential_tags_current_page + 1} of {total_pages}"
+        )
+        page_label.pack(side="left", padx=5)
+
+        next_button = ctk.CTkButton(
+            self.potential_tags_pagination,
+            text="Next",
+            state="normal" if self.potential_tags_current_page < total_pages - 1 else "disabled",
+            command=lambda: self.change_potential_tags_page(1)
+        )
+        next_button.pack(side="left", padx=5)
+
+
+    def change_potential_tags_page(self, direction):
+        """Change the current page of potential tags."""
+        self.potential_tags_current_page += direction
+        self.update_potential_tags()
+
+
+    def change_assigned_tags_page(self, direction):
+        """Change the current page of assigned tags."""
+        self.assigned_tags_current_page += direction
+        self.update_assigned_tags()
+
+
+    def update_tag_search_results(self, query=None, event=None):
+        """Update potential tag search results dynamically and reset pagination."""
+        # If called by an event, extract the query from the entry widget
+        if event:
+            query = self.character_tag_search_var.get()
+
+        # Fetch all tags from the tag manager
         all_tags = sorted([tag["name"] for tag in self.tag_manager.tags])
 
         # Get assigned tags for the selected character
@@ -960,71 +1159,24 @@ class CharacterCardManagerApp(ctk.CTk):
                 tag["name"] for tag in self.tag_manager.tags if tag["id"] in assigned_tag_ids
             }
 
-        # Filter potential tags based on the query and exclude assigned tags
-        if query.strip():
-            potential_tags = [
+        # Filter tags based on the search query and exclude assigned tags
+        if query and query.strip():
+            filtered_tags = [
                 tag for tag in all_tags if query.strip().lower() in tag.lower() and tag not in assigned_tags
             ]
         else:
-            potential_tags = [tag for tag in all_tags if tag not in assigned_tags]
+            filtered_tags = [tag for tag in all_tags if tag not in assigned_tags]
 
-        # Sort potential tags A-Z
-        potential_tags.sort()
+        # Update the full list and reset pagination
+        self.potential_tags_full_list = filtered_tags
+        self.potential_tags_current_page = 0
 
-        # Display the potential tags
-        for tag in potential_tags:
-            tag_frame = ctk.CTkFrame(frame, corner_radius=5)
-            tag_frame.pack(pady=2, padx=5, fill="x")
+        # Refresh the tags display
+        self.update_potential_tags()
 
-            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
-            tag_label.pack(side="left", padx=5)
+        # Reset scroll position to the top
+        self.potential_tags_frame._parent_canvas.yview_moveto(0)
 
-            # "+" button to assign the tag
-            add_button = ctk.CTkButton(
-                tag_frame,
-                text="+",
-                width=30,
-                command=partial(self.tag_manager.add_tag, tag)  # Assign the tag using the tag manager
-            )
-            add_button.pack(side="right", padx=1)
-
-    def display_tags(self, frame, tags, allow_removal=False, allow_add=False):
-        """Display tags in the specified frame with optional add or remove buttons."""
-        # Clear the frame before populating
-        for widget in frame.winfo_children():
-            widget.destroy()
-
-        # Sort tags A-Z
-        tags = sorted(tags)
-
-        for tag in tags:
-            tag_frame = ctk.CTkFrame(frame, corner_radius=5)
-            tag_frame.pack(pady=2, padx=5, fill="x")
-
-            tag_label = ctk.CTkLabel(tag_frame, text=tag, anchor="w")
-            tag_label.pack(side="left", padx=5)
-
-            if allow_removal:
-                # Add delete button only if removal is allowed
-                delete_button = ctk.CTkButton(
-                    tag_frame,
-                    text="X",
-                    width=30,
-                    fg_color="red",
-                    command=self.create_remove_tag_command(tag)
-                )
-                delete_button.pack(side="right", padx=1)
-
-            if allow_add:
-                # Add "+" button to assign the tag
-                add_button = ctk.CTkButton(
-                    tag_frame,
-                    text="+",
-                    width=30,
-                    fg_color="green",
-                    command=partial(self.assign_tag_to_character, tag)
-                )
-                add_button.pack(side="right", padx=1)
 
     def assign_tag_to_character(self, tag):
         """Assign a tag to the selected character."""
@@ -1060,7 +1212,7 @@ class CharacterCardManagerApp(ctk.CTk):
             self.tag_manager.save_tags()
 
             # Refresh the tag search results
-            self.update_tag_search_results("", self.potential_character_tags_frame)
+            self.update_tag_search_results("")  # Clear search box and reload potential tags
             self.show_message(f"Tag '{tag_name}' added successfully.", "success")
 
             # Clear the input field
@@ -1109,7 +1261,7 @@ class CharacterCardManagerApp(ctk.CTk):
     def clear_tags(self):
         """Clear all tags displayed in the tag frames."""
         for frame in [
-            self.assigned_character_tags_frame, self.potential_character_tags_frame
+            self.assigned_tags_frame, self.potential_tags_frame
         ]:
             for widget in frame.winfo_children():
                 widget.destroy()
@@ -1551,8 +1703,15 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def select_character_by_id(self, character_id):
         """Handle character selection by ID and populate the edit panel."""
-        print(character_id)
         try:
+            # Get the currently visible tab, if any
+            current_tab_name = None
+            if hasattr(self, "edit_panel"):
+                for widget in self.edit_panel.winfo_children():
+                    if isinstance(widget, ctk.CTkTabview):
+                        current_tab_name = widget.get()  # Get the name of the currently active tab
+                        break
+
             # Fetch character details from the database
             connection = sqlite3.connect(self.db_manager.db_path)
             cursor = connection.cursor()
@@ -1569,20 +1728,12 @@ class CharacterCardManagerApp(ctk.CTk):
             if result:
                 # Extract data
                 self.selected_character_id = result[0]
-                self.selected_character_name = result[1]  # Ensure this is set
+                self.selected_character_name = result[1]
                 name, main_file, notes, misc_notes, created_date, last_modified_date = result[1:]
 
                 # Handle None values
                 notes = notes or ""
                 misc_notes = misc_notes or ""
-
-                # Debugging: Print fetched values
-                # print(name)
-                # print(notes)
-                # print(misc_notes)
-                # print(created_date)
-                # print(last_modified_date)
-                # print(main_file)
 
                 # Unified UI update
                 fields_to_update = {
@@ -1612,22 +1763,16 @@ class CharacterCardManagerApp(ctk.CTk):
                             elif field_type == "textbox":
                                 field.delete("1.0", "end")
                                 field.insert("1.0", value)
-                            field.update_idletasks()  # Force the UI to refresh
-                        else:
-                            print(f"{field_name} does not exist or is not accessible.")
-                    else:
-                        print(f"{field_name} is not a valid attribute.")
+                            field.update_idletasks()
 
                 # Load extra images for the selected character
                 self.extra_images_manager.load_extra_images(
                     self.selected_character_id,
                     self.extra_images_frame,
-                    self.create_thumbnail
+                    self.create_thumbnail,
                 )
 
                 self.load_related_characters()
-                
-                # Load tags for the selected character
                 self.load_tags_for_character(name)
 
                 # Update the currently selected character in the sidebar
@@ -1640,14 +1785,12 @@ class CharacterCardManagerApp(ctk.CTk):
                 # Highlight the selected character in the list
                 self.highlight_selected_character(character_id)
 
-                # Set the tabview to the "Notes" tab
-                if hasattr(self, "edit_panel"):
+                # Restore the previously active tab
+                if hasattr(self, "edit_panel") and current_tab_name:
                     for widget in self.edit_panel.winfo_children():
                         if isinstance(widget, ctk.CTkTabview):
-                            widget.set("Notes")  # Set the active tab to "Notes"
+                            widget.set(current_tab_name)  # Restore the active tab
                             break
-
-
             else:
                 # Handle case where the character does not exist
                 self.clear_edit_panel()
@@ -1657,8 +1800,8 @@ class CharacterCardManagerApp(ctk.CTk):
             print(f"Error in select_character_by_id: {e}")
 
     def load_tags_for_character(self, character_name):
-        """Load and display tags for the selected character."""
-        self.tag_manager.reload_tags()  # Ensure the tag manager has the latest data
+        """Load tags for the selected character and apply default sorting."""
+        self.tag_manager.reload_tags()
 
         if not character_name:
             self.clear_tags()
@@ -1666,15 +1809,20 @@ class CharacterCardManagerApp(ctk.CTk):
 
         character_name = f"{character_name}.png" if not character_name.endswith(".png") else character_name
         character_tag_ids = self.tag_manager.tag_map.get(character_name, [])
-        assigned_tags = [
+        self.assigned_tags_full_list = [
             tag["name"] for tag in self.tag_manager.tags if tag["id"] in character_tag_ids
         ]
-        all_tags = [tag["name"] for tag in self.tag_manager.tags]
-        potential_tags = [tag for tag in all_tags if tag not in assigned_tags]
+        self.potential_tags_full_list = [
+            tag["name"] for tag in self.tag_manager.tags if tag["name"] not in self.assigned_tags_full_list
+        ]
 
-        # Update the UI
-        self.display_tags(self.assigned_character_tags_frame, assigned_tags, allow_removal=True)
-        self.display_tags(self.potential_character_tags_frame, potential_tags, allow_add=True)
+        # Apply default A-Z sorting
+        self.assigned_tags_full_list.sort()
+        self.potential_tags_full_list.sort()
+
+        # Display initial tags
+        self.update_assigned_tags()
+        self.update_potential_tags()
 
 
 
