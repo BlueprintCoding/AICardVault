@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from customtkinter import CTkFont
+from customtkinter import CTkFont, CTkInputDialog
 from PIL import Image, ImageTk
 from pathlib import Path
 import os
@@ -21,38 +21,30 @@ from utils.st_tag_manager import TagsManager
 from utils.st_tag_manager_edit_panel import SillyTavernTagManager
 from utils.import_lorebooks import LorebookManager
 from tkinter.filedialog import askopenfilename
+from tkinter.messagebox import askyesno
+
 
 class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("AI Card Vault")
-        self.geometry("1400x700")
+        self.geometry("1400x710")
         ctk.set_appearance_mode("dark")  # Use system theme
         ctk.set_default_color_theme("assets/AiCardVaultTheme.json")
         self.current_page = 0  # Start at the first page
-        self.items_per_page = 6  # Display 8 cards per page
-        self.total_pages = 0  # Calculate based on the number of items
-        self.filtered_characters = []  # This will hold the search results
-        self.search_debounce_timer = None
-        
-        # edit panel tags vars
-        self.tags_per_page = 10
-        self.assigned_tags_current_page = 0
-        self.potential_tags_current_page = 0
-        # Initialize empty lists for tags
-        self.assigned_tags_full_list = []
-        self.potential_tags_full_list = []
 
         # Initialize database and file handler
         self.db_manager = DatabaseManager()
         self.file_handler = FileHandler()
 
-          # Load settings from the database
+        # Load settings from the database
         self.settings = {
             "appearance_mode": self.db_manager.get_setting("appearance_mode", "dark"),
             "sillytavern_path": Path(self.db_manager.get_setting("sillytavern_path", "")).resolve(),
+            "default_sort_order": self.db_manager.get_setting("default_sort_order", "A - Z"),
+            "items_per_page": int(self.db_manager.get_setting("items_per_page", "5")),  # Default to 5 if not set
+            "tags_per_page": int(self.db_manager.get_setting("tags_per_page", "10")),  # Default to 10 if not set
         }
-        self.tag_manager = SillyTavernTagManager(self.settings["sillytavern_path"])
 
         # Initialize SillyTavernTagManager after settings are loaded
         self.tag_manager = SillyTavernTagManager(self.settings["sillytavern_path"])
@@ -61,9 +53,27 @@ class CharacterCardManagerApp(ctk.CTk):
         if not self.db_manager.get_setting("default_sort_order"):
             self.db_manager.set_setting("default_sort_order", "A - Z")
 
-        # Apply appearance mode
-        ctk.set_appearance_mode(self.settings["appearance_mode"])
-        
+        # Ensure items_per_page and tags_per_page are set if not already present
+        if not self.db_manager.get_setting("items_per_page"):
+            self.db_manager.set_setting("items_per_page", "5")
+        if not self.db_manager.get_setting("tags_per_page"):
+            self.db_manager.set_setting("tags_per_page", "10")
+
+        # Load items_per_page and tags_per_page from settings
+        self.items_per_page = int(self.db_manager.get_setting("items_per_page", "5"))  # Default to 5
+        self.tags_per_page = int(self.db_manager.get_setting("tags_per_page", "10"))  # Default to 10
+
+        self.total_pages = 0  # Calculate based on the number of items
+        self.filtered_characters = []  # This will hold the search results
+        self.search_debounce_timer = None
+
+        # Pagination variables for tags
+        self.assigned_tags_current_page = 0
+        self.potential_tags_current_page = 0
+        # Initialize empty lists for tags
+        self.assigned_tags_full_list = []
+        self.potential_tags_full_list = []
+
                 # Initialize ExtraImagesManager
         self.extra_images_manager = ExtraImagesManager(
             self,  # Pass the main app window as master
@@ -104,6 +114,8 @@ class CharacterCardManagerApp(ctk.CTk):
         self.db_manager.set_setting("appearance_mode", updated_settings["appearance_mode"])
         self.db_manager.set_setting("sillytavern_path", updated_settings["sillytavern_path"])
         self.db_manager.set_setting("default_sort_order", updated_settings["default_sort_order"])
+        self.db_manager.set_setting("items_per_page", updated_settings["items_per_page"])
+        self.db_manager.set_setting("tags_per_page", updated_settings["tags_per_page"])
 
         # Apply appearance mode
         ctk.set_appearance_mode(updated_settings["appearance_mode"])
@@ -121,6 +133,15 @@ class CharacterCardManagerApp(ctk.CTk):
 
             print("Reinitializing SillyTavernTagManager with the new path...")
             self.tag_manager = SillyTavernTagManager(new_sillytavern_path)
+
+        # Update items_per_page and tags_per_page dynamically in the UI
+        self.items_per_page = int(updated_settings["items_per_page"])
+        self.tags_per_page = int(updated_settings["tags_per_page"])
+
+        # Refresh UI to reflect updated pagination settings
+        self.filter_character_list()
+        self.update_assigned_tags()
+        self.update_potential_tags()
 
     def open_import_modal(self):
         # Retrieve the sillytavern_path from the database and normalize it
@@ -152,9 +173,9 @@ class CharacterCardManagerApp(ctk.CTk):
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nswe")
 
-        # Sidebar Title
-        sidebar_label = ctk.CTkLabel(self.sidebar, text="Menu", font=ctk.CTkFont(size=18, weight="bold"))
-        sidebar_label.pack(pady=10)
+        # # Sidebar Title
+        # sidebar_label = ctk.CTkLabel(self.sidebar, text="Menu", font=ctk.CTkFont(size=18, weight="bold"))
+        # sidebar_label.pack(pady=10)
 
         # Space for "Currently Selected Character"
         self.selected_character_frame = None  # Will be created when a character is selected
@@ -166,11 +187,11 @@ class CharacterCardManagerApp(ctk.CTk):
         # self.import_button = ctk.CTkButton(self.sidebar, text="Import Cards From SillyTavern", command=self.open_import_modal)
         # self.import_button.pack(pady=10, padx=10, fill="x")
 
-        self.sync_button = ctk.CTkButton(self.sidebar, text="Sync Cards from SillyTavern", command=self.sync_cards_from_sillytavern)
+        self.sync_button = ctk.CTkButton(self.sidebar, text="Sync Data from SillyTavern", command=self.sync_cards_from_sillytavern)
         self.sync_button.pack(pady=10, padx=10, fill="x")
 
 
-        self.import_button = ctk.CTkButton(self.sidebar, text="Manage SillyTavern Tags", command=self.open_import_tags_modal)
+        self.import_button = ctk.CTkButton(self.sidebar, text="Manage Tags", command=self.open_import_tags_modal)
         self.import_button.pack(pady=10, padx=10, fill="x")
 
         self.manage_lorebooks_button = ctk.CTkButton(self.sidebar, text="Manage Lorebooks", command=self.open_lorebooks_modal)
@@ -189,9 +210,9 @@ class CharacterCardManagerApp(ctk.CTk):
         self.character_list_frame = ctk.CTkFrame(self)
         self.character_list_frame.grid(row=0, column=1, sticky="nswe", padx=10, pady=10)
 
-        # Title
-        list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
-        list_label.pack(pady=(10, 0))
+        # # Title
+        # list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
+        # list_label.pack(pady=(10, 0))
 
         # Search Bar
         self.search_var = ctk.StringVar()
@@ -205,15 +226,41 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Bind the search entry to the debounce function
         self.search_var.trace_add("write", lambda *args: self.debounce_search())
+        
+        # Create a horizontal frame for the sort dropdown and tags filter button
+        sort_and_filter_frame = ctk.CTkFrame(self.character_list_frame, fg_color="transparent")
+        sort_and_filter_frame.pack(fill="x", padx=10, pady=0)  # Reduce vertical padding
+
+        # Spacer frame on the left for centering
+        left_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10,  fg_color="transparent")
+        left_spacer.pack(side="left", expand=True)
+
+        # Sort Dropdown
+        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
+        self.sort_var = ctk.StringVar(value=default_sort_order)
+        sort_dropdown = ctk.CTkOptionMenu(
+            sort_and_filter_frame,
+            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
+            variable=self.sort_var,
+            command=self.sort_character_list,
+            height=30  # Reduce height
+        )
+        sort_dropdown.pack(side="left", padx=(0, 10))  # Adjust padding
 
         # Character Tags Filter Button
         self.character_tags_filter = []
         char_tags_button = ctk.CTkButton(
-            self.character_list_frame,
-            text="Filter by Character Tags",
+            sort_and_filter_frame,
+            text="Filter by Tags",
             command=lambda: self.open_tag_filter_modal("Character Tags", self.character_tags_filter),
+            height=30  # Match height with dropdown
         )
-        char_tags_button.pack(pady=5, padx=10)
+        char_tags_button.pack(side="left")
+
+        # Spacer frame on the right for centering
+        right_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10, fg_color="transparent")
+        right_spacer.pack(side="left", expand=True)
+
         
         # Scrollable Frame for Characters
         self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
@@ -224,17 +271,6 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Navigation Buttons
         self.create_navigation_buttons()
-
-                # Sort Dropdown
-        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
-        self.sort_var = ctk.StringVar(value=default_sort_order)
-        sort_dropdown = ctk.CTkOptionMenu(
-            self.character_list_frame,
-            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
-            variable=self.sort_var,
-            command=self.sort_character_list
-        )
-        sort_dropdown.pack(pady=(5, 10), padx=10)
 
         # Initialize Card Count Label early
         self.card_count_label = ctk.CTkLabel(
@@ -442,6 +478,13 @@ class CharacterCardManagerApp(ctk.CTk):
         header_frame = ctk.CTkFrame(modal)
         header_frame.pack(fill="x", padx=10, pady=5)
 
+        # No Tags Assigned Checkbox
+        no_tags_var = ctk.BooleanVar(value=False)
+        no_tags_checkbox = ctk.CTkCheckBox(
+            header_frame, text="No Tags Assigned", variable=no_tags_var
+        )
+        no_tags_checkbox.pack(side="left", padx=5)
+
         # Sort Dropdown
         sort_var = ctk.StringVar(value="A - Z")
         sort_dropdown = ctk.CTkOptionMenu(
@@ -466,7 +509,8 @@ class CharacterCardManagerApp(ctk.CTk):
             modal,
             text="Save",
             command=lambda: self.apply_tag_filter(
-                {tag for tag, var in tag_vars.items() if var.get()}
+                {tag for tag, var in tag_vars.items() if var.get()},
+                no_tags_var.get(),
             ),
         )
         save_button.pack(pady=10)
@@ -474,7 +518,7 @@ class CharacterCardManagerApp(ctk.CTk):
         # Initialize Tag Variables
         tag_vars = {}
         update_modal_display()  # Initial display
-
+        
     def get_associated_tags(self):
         """Get tags with their associated character counts, sorted A-Z by default."""
         self.tag_manager.reload_tags()
@@ -487,12 +531,13 @@ class CharacterCardManagerApp(ctk.CTk):
         return tags_with_counts
 
 
-    def apply_tag_filter(self, selected_tags):
+    def apply_tag_filter(self, selected_tags, no_tags_only):
         """Apply the selected tags as filters."""
         self.character_tags_filter = selected_tags
-        self.filter_character_list()
+        self.filter_character_list(no_tags_only)
 
-    def filter_character_list(self):
+
+    def filter_character_list(self, no_tags_only=False):
         """Filter the character list based on search query and selected tags."""
         query = self.search_var.get().lower().strip()
         selected_tags = self.character_tags_filter
@@ -505,10 +550,15 @@ class CharacterCardManagerApp(ctk.CTk):
             ]
             return all(tag in character_tags for tag in selected_tags)
 
+        def character_has_no_tags(character_name):
+            character_name_png = f"{character_name}.png" if not character_name.endswith(".png") else character_name
+            return character_name_png not in self.tag_manager.tag_map or not self.tag_manager.tag_map[character_name_png]
+
         self.filtered_characters = [
             char for char in self.all_characters
             if (not query or query in char["name"].lower())
             and (not selected_tags or character_has_selected_tags(char["name"]))
+            and (not no_tags_only or character_has_no_tags(char["name"]))
         ]
 
         # Recalculate pages and refresh the display
@@ -567,7 +617,7 @@ class CharacterCardManagerApp(ctk.CTk):
         char_frame = ctk.CTkFrame(self.scrollable_frame, corner_radius=5, border_width=0, border_color="")
         char_frame.character_id = character["id"]  # Assign the character ID
         char_frame.character_name = character["name"]  # Assign the character name
-        char_frame.pack(pady=5, padx=5, fill="x")
+        char_frame.pack(pady=(0,1), padx=5, fill="x")
 
         image_path = character.get("image_path", "assets/default_thumbnail.png")
         created_date = character.get("created_date", "Unknown Date")
@@ -1200,13 +1250,32 @@ class CharacterCardManagerApp(ctk.CTk):
             self.show_message(f"Failed to assign tag: {str(e)}", "error")
 
     def add_tag_from_input(self, tag_var, tag_type):
-        """Add a new tag based on user input and assign it to the currently selected character."""
+        """Add a new tag based on user input, checking for case-insensitive duplicates."""
         tag_name = tag_var.get().strip()
         if not tag_name:
             self.show_message("Tag name cannot be empty.", "error")
             return
 
         try:
+            # Check if the tag already exists (case-insensitive)
+            existing_tag = next(
+                (tag for tag in self.tag_manager.tags if tag["name"].lower() == tag_name.lower()), 
+                None
+            )
+
+            if existing_tag:
+                if existing_tag["name"] != tag_name:
+                    # Warn the user about the capitalization mismatch
+                    proceed = askyesno(
+                        title="Duplicate Tag",
+                        message=f"The tag '{existing_tag['name']}' already exists with different capitalization.\n"
+                                f"Do you still want to create a new tag '{tag_name}'?"
+                    )
+                    if not proceed:
+                        self.show_message("Tag creation canceled by user.", "info")
+                        tag_var.set("")  # Clear the input field
+                        return
+
             # Add the tag using the tag manager
             self.tag_manager.add_tag(tag_name)
             self.tag_manager.save_tags()
@@ -1233,6 +1302,7 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_message(f"Failed to add and assign tag: {str(e)}", "error")
+
 
     def create_remove_tag_command(self, tag_name):
         """Create a remove tag command with properly bound arguments."""
@@ -1281,8 +1351,6 @@ class CharacterCardManagerApp(ctk.CTk):
             self.show_message("No character selected to delete.", "error")
             return
 
-        # Confirmation dialog
-        from tkinter.messagebox import askyesno
 
         confirm = askyesno(
             title="Delete Character",
@@ -2846,7 +2914,6 @@ class CharacterCardManagerApp(ctk.CTk):
             return
 
         # Confirm deletion
-        from tkinter.messagebox import askyesno
         confirm = askyesno("Delete Image", "Are you sure you want to delete this image? This action cannot be undone.")
         if not confirm:
             return
