@@ -1691,7 +1691,6 @@ class CharacterCardManagerApp(ctk.CTk):
                     "The file already exists in your SillyTavern folder. Do you want to create a new copy?"
                 )
                 if response:
-                    # Increment the filename until an unused one is found
                     base_name = target_file_path.stem
                     extension = target_file_path.suffix
                     counter = 1
@@ -1699,25 +1698,25 @@ class CharacterCardManagerApp(ctk.CTk):
                         target_file_path = sillytavern_path / f"{base_name}_{counter}{extension}"
                         counter += 1
                 else:
-                    self.show_add_character_message("Import canceled due to file conflict.", "error")
+                    self.show_add_character_message("Import canceled due to name conflict.", "error")
                     return
 
-            # Fetch the card details from AICC and save directly to the finalized target file path
-            downloaded_file = AICCImporter.fetch_card(card_id, target_file_path)
+            # Fetch the card details and download the PNG file
+            card_details, downloaded_file = AICCImporter.fetch_card(card_id, target_file_path)
 
-            # Store the file path for potential cleanup
-            self.temp_imported_file = downloaded_file
+            # Extract details from the API response
+            card_name = card_details.get("title", None)
+            excerpt = card_details.get("excerpt", "").strip()
+            content = card_details.get("content", "").strip()
 
-            # Attempt to read metadata from the file
+            # Attempt to read metadata from the file for fallback
             try:
                 metadata = PNGMetadataReader.extract_text_metadata(str(downloaded_file))
                 highest_spec_metadata = PNGMetadataReader.get_highest_spec_fields(metadata)
-                card_name = highest_spec_metadata.get("name", None)  # Extract the 'name' field
                 creator_notes = highest_spec_metadata.get("creator_notes", "").strip()
                 description = highest_spec_metadata.get("description", "").strip()
             except Exception as e:
                 print(f"Error reading metadata: {e}")
-                card_name = None
                 creator_notes = ""
                 description = ""
 
@@ -1726,16 +1725,13 @@ class CharacterCardManagerApp(ctk.CTk):
                 "This card was uploaded to https://aicharactercards.com, "
                 "please come back and rate the card if you enjoy it to help other users find the card."
             )
-
-            # Process creator_notes
             if creator_notes == unwanted_notes:
-                creator_notes = ""  # Treat it as empty
+                creator_notes = ""
             elif unwanted_notes in creator_notes:
-                # Remove unwanted text if other content exists
                 creator_notes = creator_notes.replace(unwanted_notes, "").strip()
 
-            # Populate the file path field and name field
-            self.file_path_entry.delete(0, "end")  # Corrected line
+            # Populate the file path and name fields
+            self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, str(downloaded_file))
 
             if card_name:
@@ -1746,8 +1742,12 @@ class CharacterCardManagerApp(ctk.CTk):
                 self.add_character_name_entry.delete(0, "end")
                 self.add_character_name_entry.insert(0, formatted_name)
 
-            # Populate character notes
-            if creator_notes:
+            # Prioritize notes: excerpt > content > creator_notes > description
+            if excerpt:
+                notes = excerpt
+            elif content:
+                notes = content
+            elif creator_notes:
                 notes = creator_notes
             elif description:
                 notes = self.truncate_to_100_words(description)
@@ -1760,11 +1760,11 @@ class CharacterCardManagerApp(ctk.CTk):
             # Set the flag to indicate the file was imported
             self.is_imported_flag = True
 
-            # Show success message
             self.show_add_character_message("Card imported successfully. Fill in other details before saving.", "success")
 
         except Exception as e:
             self.show_add_character_message(f"Error importing card: {str(e)}", "error")
+
 
     def cleanup_temp_imported_file(self):
         """Cleanup the temporary imported file if it exists and close the modal."""
@@ -3394,8 +3394,7 @@ class CharacterCardManagerApp(ctk.CTk):
         else:
             self.show_message("Failed to update image.", "error")
 
-
-
+##################### MODAL CLASS ##################
 
 class MultiSelectModal(ctk.CTkToplevel):
     def __init__(self, parent, title, options, selected_options, callback):
