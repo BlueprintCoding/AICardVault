@@ -8,8 +8,8 @@ class AICCImporter:
     BASE_URL = "https://aicharactercards.com/wp-json/pngapi/v1/image"
 
     @staticmethod
-    def fetch_card(card_id):
-        """Fetch a card PNG file from the API based on the given card ID."""
+    def fetch_card(card_id, target_file_path):
+        """Fetch a card PNG file from the API based on the given card ID and save it to the specified file path."""
         try:
             # Validate and parse the card ID
             parts = card_id.split("/")
@@ -44,24 +44,21 @@ class AICCImporter:
                 print(f"Response content:\n{response.text[:500]}")  # Debugging: Log response
                 raise ValueError(f"Unexpected Content-Type: {content_type}")
 
-            # Save the PNG file locally
-            filename = f"{title}.png"
-            filepath = Path.cwd() / filename
-
-            with filepath.open("wb") as f:
+            # Save the PNG file directly to the target file path
+            with target_file_path.open("wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
             # Validate the file's integrity using PNG magic bytes
-            with filepath.open("rb") as f:
+            with target_file_path.open("rb") as f:
                 header = f.read(8)
                 if not header.startswith(b"\x89PNG\r\n\x1a\n"):
                     raise ValueError("Downloaded file is not a valid PNG.")
 
-            print(f"Downloaded {filename} successfully.")
+            print(f"Downloaded {target_file_path.name} successfully to {target_file_path.parent}.")
 
-            # Return only the file path
-            return str(filepath)
+            # Return the file path
+            return str(target_file_path)
 
         except requests.exceptions.RequestException as e:
             print(f"HTTP Error: {e}")

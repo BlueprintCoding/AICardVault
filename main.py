@@ -8,7 +8,7 @@ import subprocess
 import platform
 import shutil
 import sqlite3
-import time
+import json
 from functools import partial
 from utils.db_manager import DatabaseManager
 from utils.file_handler import FileHandler
@@ -22,7 +22,7 @@ from utils.st_tag_manager_edit_panel import SillyTavernTagManager
 from utils.import_lorebooks import LorebookManager
 from tkinter.filedialog import askopenfilename
 from tkinter.messagebox import askyesno
-
+from utils.card_metadata import PNGMetadataReader
 
 class CharacterCardManagerApp(ctk.CTk):
     def __init__(self):
@@ -143,21 +143,21 @@ class CharacterCardManagerApp(ctk.CTk):
         self.update_assigned_tags()
         self.update_potential_tags()
 
-    def open_import_modal(self):
-        # Retrieve the sillytavern_path from the database and normalize it
-        sillytavern_path = Path(self.db_manager.get_setting("sillytavern_path", "").strip())
+    # def open_import_modal(self):
+    #     # Retrieve the sillytavern_path from the database and normalize it
+    #     sillytavern_path = Path(self.db_manager.get_setting("sillytavern_path", "").strip())
 
-        # Optional: Validate if the path exists, and raise an error or show a message if it doesn't
-        if not sillytavern_path.exists():
-            self.show_message("The SillyTavern path is not configured or does not exist. Please set it correctly in the settings.", "error")
-            return
+    #     # Optional: Validate if the path exists, and raise an error or show a message if it doesn't
+    #     if not sillytavern_path.exists():
+    #         self.show_message("The SillyTavern path is not configured or does not exist. Please set it correctly in the settings.", "error")
+    #         return
 
-        def refresh_character_list():
-            self.scrollable_frame.destroy()  # Destroy the old frame
-            self.create_character_list()    # Recreate the character list
+    #     def refresh_character_list():
+    #         self.scrollable_frame.destroy()  # Destroy the old frame
+    #         self.create_character_list()    # Recreate the character list
 
-        import_modal = ImportModal(self, self.db_manager, sillytavern_path, refresh_character_list)
-        import_modal.open()
+    #     import_modal = ImportModal(self, self.db_manager, sillytavern_path, refresh_character_list)
+    #     import_modal.open()
 
     def load_extra_images(self):
         """Delegate to ExtraImagesManager."""
@@ -800,6 +800,23 @@ class CharacterCardManagerApp(ctk.CTk):
         self.misc_notes_textbox = ctk.CTkTextbox(notes_tab, height=150)
         self.misc_notes_textbox.pack(fill="both", expand=True, padx=0, pady=5)
 
+        # Card Data Tab
+        chardata_tab = tabview.add("Card Data")
+
+        # Label for Card Data Display
+        chardata_label = ctk.CTkLabel(
+            chardata_tab,
+            text="Read-Only:",
+            font=ctk.CTkFont(size=10, weight="bold")
+        )
+        chardata_label.pack(anchor="w", padx=0, pady=0)
+
+        # Frame to hold dynamically created fields
+        self.chardata_frame = ctk.CTkScrollableFrame(chardata_tab)
+        self.chardata_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+
+
         # Extra Images Tab
         images_tab = tabview.add("Images")
         self.add_image_button = ctk.CTkButton(
@@ -1018,6 +1035,61 @@ class CharacterCardManagerApp(ctk.CTk):
         # Also bind to the parent frame if provided
         if parent_frame:
             parent_frame.bind("<Enter>", lambda _: parent_frame.bind_all("<MouseWheel>", _on_mouse_wheel))
+
+
+    def load_card_data(self, card_data):
+        """
+        Dynamically create labels and textboxes for each key in the card data, with custom heights for specific keys.
+        """
+        # Define custom heights for specific keys
+        custom_heights = {
+            "name": 20,
+            "description": 150,
+            "personality": 150,
+            "scenario": 150,
+            "first_mes": 150,
+            "mes_example": 150,
+            "creator_notes": 100,
+            "creator": 20,
+            "creatorcomment": 50,
+            "character_version": 20,
+            "extensions": 50,
+            "alternate_greetings": 100,
+            "group_only_greetings": 50,
+            "tags": 100,
+        }
+        default_height = 50  # Default height for unspecified keys
+
+        # Clear previous fields
+        for widget in self.chardata_frame.winfo_children():
+            widget.destroy()
+
+        # Create a field for each key-value pair in the card data
+        for key, value in card_data.items():
+            # Label for the key
+            key_label = ctk.CTkLabel(
+                self.chardata_frame,
+                text=f"{key}:",
+                font=ctk.CTkFont(size=12, weight="bold")
+            )
+            key_label.pack(anchor="w", padx=0, pady=0)
+
+            # Determine the height of the textbox
+            height = custom_heights.get(key, default_height)
+
+            # Read-only textbox for the value
+            value_text = ctk.CTkTextbox(self.chardata_frame, height=height, state="normal", wrap="word")
+            value_text.insert("1.0", json.dumps(value, indent=4) if isinstance(value, (dict, list)) else str(value))
+            value_text.configure(state="disabled")  # Make the textbox read-only
+            value_text.pack(fill="x", padx=0, pady=(0, 2))
+
+
+    def display_character_metadata(self, character_metadata):
+        """
+        Display the character's metadata in the Metadata tab.
+        """
+        self.load_card_data(character_metadata)
+
 
 
     def search_tags(self, query):
@@ -1596,12 +1668,43 @@ class CharacterCardManagerApp(ctk.CTk):
             return
 
         try:
-            # Fetch the card details from AICC
-            downloaded_file = AICCImporter.fetch_card(card_id)
+            # Use SillyTavern path as the download target directory
+            sillytavern_path = Path(self.settings["sillytavern_path"]).resolve() / "characters"
+
+            # Parse the card ID to get the file name
+            parts = card_id.split("/")
+            if len(parts) != 3 or parts[0] != "AICC":
+                raise ValueError("Invalid card ID format. Expected 'AICC/author/title'.")
+            title = parts[2]  # Extract the title as the file name
+            target_file_path = sillytavern_path / f"{title}.png"
+
+            # Check if the file already exists
+            if target_file_path.exists():
+                response = askyesno(
+                    "File Conflict",
+                    "The file already exists in your SillyTavern folder. Do you want to create a new copy?"
+                )
+                if response:
+                    # Increment the filename until an unused one is found
+                    base_name = target_file_path.stem
+                    extension = target_file_path.suffix
+                    counter = 1
+                    while target_file_path.exists():
+                        target_file_path = sillytavern_path / f"{base_name}_{counter}{extension}"
+                        counter += 1
+                else:
+                    self.show_add_character_message("Import canceled due to file conflict.", "error")
+                    return
+
+            # Fetch the card details from AICC and save directly to the finalized target file path
+            downloaded_file = AICCImporter.fetch_card(card_id, target_file_path)
 
             # Populate only the file path field
             self.file_path_entry.delete(0, "end")
-            self.file_path_entry.insert(0, downloaded_file)
+            self.file_path_entry.insert(0, str(downloaded_file))
+
+            # Set the flag to indicate the file was imported
+            self.is_imported_flag = True
 
             # Show success message
             self.show_add_character_message("Card imported successfully. Fill in other details before saving.", "success")
@@ -1626,17 +1729,19 @@ class CharacterCardManagerApp(ctk.CTk):
 
     def browse_file(self):
         """Open a file dialog to select an image or JSON file."""
-        
         file_path = askopenfilename(filetypes=[("Image/JSON Files", "*.png *.jpg *.jpeg *.json")])
         if file_path:
             # Update file path entry
             self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, file_path)
 
-            # Default character name to file name (without extension)
+            # Default character name to formatted file name (without extension)
             default_name = Path(file_path).stem
+            formatted_name = " ".join(word.capitalize() for word in default_name.replace("_", " ").replace("-", " ").split())
+            
             self.add_character_name_entry.delete(0, "end")
-            self.add_character_name_entry.insert(0, default_name)
+            self.add_character_name_entry.insert(0, formatted_name)
+
 
 
     def export_data(self):
@@ -1858,6 +1963,23 @@ class CharacterCardManagerApp(ctk.CTk):
                 )
                 self.update_currently_selected_character(name, str(image_path))
 
+                # Parse and load char metadata if main_file exists
+                if main_file:
+                    png_path = Path("CharacterCards") / name / main_file
+                    if png_path.exists():
+                        try:
+                            metadata = PNGMetadataReader.extract_text_metadata(str(png_path))
+                            highest_spec_metadata = PNGMetadataReader.get_highest_spec_fields(metadata)
+                            self.load_card_data(highest_spec_metadata)  # Load into the Card Data tab
+                        except Exception as e:
+                            print(f"Error parsing metadata: {e}")
+                            self.load_card_data({"Error": "Could not parse metadata."})
+                    else:
+                        self.load_card_data({"Error": "Main file not found."})
+                else:
+                    self.load_card_data({"Error": "No main file specified."})
+
+
                 # Highlight the selected character in the list
                 self.highlight_selected_character(character_id)
 
@@ -2004,7 +2126,7 @@ class CharacterCardManagerApp(ctk.CTk):
                 return
 
     def save_character_with_message(self):
-        """Save the character to the database and SillyTavern, referencing SillyTavern PNGs directly."""
+        """Save the character to the database and SillyTavern, ensuring no conflicts with existing files."""
         file_path = Path(self.file_path_entry.get().strip())
         character_name = self.add_character_name_entry.get().strip()
         character_notes = self.add_character_notes_textbox.get("1.0", "end").strip()
@@ -2015,46 +2137,51 @@ class CharacterCardManagerApp(ctk.CTk):
             self.show_add_character_message("Please provide a character name.", "error")
             return
 
-        # Validate that either a file or an imported PNG exists
+        # Validate that the file exists
         if not file_path.exists():
             self.show_add_character_message("Please select a file or import a card via the API.", "error")
             return
 
-        # Check for duplicate character name
-        connection = sqlite3.connect(self.db_manager.db_path)
-        cursor = connection.cursor()
-        cursor.execute("SELECT COUNT(*) FROM characters WHERE name = ?", (character_name,))
-        if cursor.fetchone()[0] > 0:
-            self.show_add_character_message("Character name already exists. Please choose another name.", "error")
-            connection.close()
-            return
-
         # Ensure `sillytavern_path` is a Path object
         sillytavern_path = Path(self.settings["sillytavern_path"]).resolve() / "characters"
-        app_character_dir = Path("CharacterCards") / character_name
-        sillytavern_path.mkdir(parents=True, exist_ok=True)
-        app_character_dir.mkdir(parents=True, exist_ok=True)
+        sillytavern_path.mkdir(parents=True, exist_ok=True)  # Ensure the folder exists
+
+        # Check if the file was imported (use flag) or browsed via file dialog
+        is_imported = getattr(self, "is_imported_flag", False)
+        final_file_path = sillytavern_path / file_path.name
+
+        if not is_imported:
+            # Handle conflict only for browsed files
+            if final_file_path.exists():
+                response = askyesno(
+                    "File Conflict",
+                    "The file already exists in your SillyTavern folder. Do you want to create a new copy?"
+                )
+                if response:
+                    # Increment the filename until an unused one is found
+                    base_name = final_file_path.stem
+                    extension = final_file_path.suffix
+                    counter = 1
+                    while final_file_path.exists():
+                        final_file_path = sillytavern_path / f"{base_name}_{counter}{extension}"
+                        counter += 1
+                    # Move the file to the new path
+                    shutil.copy(str(file_path), str(final_file_path))
+                else:
+                    self.show_add_character_message("File import canceled due to name conflict.", "error")
+                    return
+            else:
+                # Move the file if no conflict exists
+                shutil.move(str(file_path), str(final_file_path))
 
         try:
-            # Handle file from the file browser
-            if file_path:
-                final_file_path = sillytavern_path / file_path.name
-                shutil.copy(file_path, final_file_path)
-
-            # Handle imported PNG via API
-            elif hasattr(self, "imported_png_path") and Path(self.imported_png_path).exists():
-                final_file_path = sillytavern_path / f"{character_name}.png"
-                shutil.move(self.imported_png_path, final_file_path)
-                del self.imported_png_path  # Clean up the attribute after use
-
-            else:
-                raise ValueError("No valid file found for saving.")
-
             # Generate timestamps
             created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             last_modified_date = created_date
 
             # Add character data to the database
+            connection = sqlite3.connect(self.db_manager.db_path)
+            cursor = connection.cursor()
             cursor.execute(
                 """INSERT INTO characters 
                 (name, main_file, notes, misc_notes, created_date, last_modified_date) 
@@ -2090,8 +2217,6 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_add_character_message(f"Error saving character: {str(e)}", "error")
-
-
 
 
     def show_message(self, message, message_type="error"):
