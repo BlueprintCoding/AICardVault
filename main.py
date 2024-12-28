@@ -1566,6 +1566,9 @@ class CharacterCardManagerApp(ctk.CTk):
         self.add_character_window.transient(self)  # Set to be a child of the main window
         self.add_character_window.grab_set()       # Block interaction with the main window
 
+            # Add a protocol handler for the window close event
+        self.add_character_window.protocol("WM_DELETE_WINDOW", self.cleanup_temp_imported_file)
+
         # Align the modal to the top-left corner of the main window
         self._align_modal_top_left(self.add_character_window)
 
@@ -1590,7 +1593,7 @@ class CharacterCardManagerApp(ctk.CTk):
         self.file_path_entry = ctk.CTkEntry(file_frame, placeholder_text="Select File", width=240)
         self.file_path_entry.pack(side="left", padx=5)
 
-        browse_button = ctk.CTkButton(file_frame, text="Browse", width=100, command=self.browse_file)
+        browse_button = ctk.CTkButton(file_frame, text="Browse", width=100, command=self.browse_file_add_char)
         browse_button.pack(side="left", padx=5)
 
         # Character Name Section
@@ -1699,9 +1702,57 @@ class CharacterCardManagerApp(ctk.CTk):
             # Fetch the card details from AICC and save directly to the finalized target file path
             downloaded_file = AICCImporter.fetch_card(card_id, target_file_path)
 
-            # Populate only the file path field
-            self.file_path_entry.delete(0, "end")
+            # Store the file path for potential cleanup
+            self.temp_imported_file = downloaded_file
+
+            # Attempt to read metadata from the file
+            try:
+                metadata = PNGMetadataReader.extract_text_metadata(str(downloaded_file))
+                highest_spec_metadata = PNGMetadataReader.get_highest_spec_fields(metadata)
+                card_name = highest_spec_metadata.get("name", None)  # Extract the 'name' field
+                creator_notes = highest_spec_metadata.get("creator_notes", "").strip()
+                description = highest_spec_metadata.get("description", "").strip()
+            except Exception as e:
+                print(f"Error reading metadata: {e}")
+                card_name = None
+                creator_notes = ""
+                description = ""
+
+            # Define the unwanted text
+            unwanted_notes = (
+                "This card was uploaded to https://aicharactercards.com, "
+                "please come back and rate the card if you enjoy it to help other users find the card."
+            )
+
+            # Process creator_notes
+            if creator_notes == unwanted_notes:
+                creator_notes = ""  # Treat it as empty
+            elif unwanted_notes in creator_notes:
+                # Remove unwanted text if other content exists
+                creator_notes = creator_notes.replace(unwanted_notes, "").strip()
+
+            # Populate the file path field and name field
+            self.file_path_entry.delete(0, "end")  # Corrected line
             self.file_path_entry.insert(0, str(downloaded_file))
+
+            if card_name:
+                self.add_character_name_entry.delete(0, "end")
+                self.add_character_name_entry.insert(0, card_name)
+            else:
+                formatted_name = " ".join(word.capitalize() for word in title.replace("_", " ").replace("-", " ").split())
+                self.add_character_name_entry.delete(0, "end")
+                self.add_character_name_entry.insert(0, formatted_name)
+
+            # Populate character notes
+            if creator_notes:
+                notes = creator_notes
+            elif description:
+                notes = self.truncate_to_100_words(description)
+            else:
+                notes = ""
+
+            self.add_character_notes_textbox.delete("1.0", "end")
+            self.add_character_notes_textbox.insert("1.0", notes)
 
             # Set the flag to indicate the file was imported
             self.is_imported_flag = True
@@ -1711,6 +1762,38 @@ class CharacterCardManagerApp(ctk.CTk):
 
         except Exception as e:
             self.show_add_character_message(f"Error importing card: {str(e)}", "error")
+
+    def cleanup_temp_imported_file(self):
+        """Cleanup the temporary imported file if it exists and close the modal."""
+        if hasattr(self, "temp_imported_file") and self.temp_imported_file:
+            try:
+                temp_file = Path(self.temp_imported_file)
+                if temp_file.exists():
+                    temp_file.unlink()  # Delete the file
+                    print(f"Temporary file {temp_file} deleted.")
+            except Exception as e:
+                print(f"Error cleaning up temporary file: {e}")
+            finally:
+                self.temp_imported_file = None  # Reset the attribute
+
+        # Destroy the modal window
+        self.add_character_window.destroy()
+
+
+    def truncate_to_100_words(self, text):
+        """
+        Truncate the text to 100 words, ensuring it ends at the nearest sentence.
+        """
+        words = text.split()
+        if len(words) <= 100:
+            return text
+
+        truncated = " ".join(words[:100])
+        if "." in truncated:
+            truncated = truncated[:truncated.rfind(".") + 1]  # Trim to the last full sentence
+
+        return truncated
+
 
 
     def show_add_character_message(self, message, message_type="error"):
@@ -1726,8 +1809,7 @@ class CharacterCardManagerApp(ctk.CTk):
         # Hide after 3 seconds
         self.add_character_window.after(3000, self.add_character_message_banner.pack_forget)
 
-
-    def browse_file(self):
+    def browse_file_add_char(self):
         """Open a file dialog to select an image or JSON file."""
         file_path = askopenfilename(filetypes=[("Image/JSON Files", "*.png *.jpg *.jpeg *.json")])
         if file_path:
@@ -1735,14 +1817,55 @@ class CharacterCardManagerApp(ctk.CTk):
             self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, file_path)
 
-            # Default character name to formatted file name (without extension)
-            default_name = Path(file_path).stem
-            formatted_name = " ".join(word.capitalize() for word in default_name.replace("_", " ").replace("-", " ").split())
-            
+            # Attempt to read metadata from the file
+            try:
+                if file_path.endswith(".png"):  # Only parse PNG files for metadata
+                    metadata = PNGMetadataReader.extract_text_metadata(file_path)
+                    highest_spec_metadata = PNGMetadataReader.get_highest_spec_fields(metadata)
+                    card_name = highest_spec_metadata.get("name", None)  # Extract the 'name' field
+                    creator_notes = highest_spec_metadata.get("creator_notes", "").strip()
+                    description = highest_spec_metadata.get("description", "").strip()
+                else:
+                    card_name = None
+                    creator_notes = ""
+                    description = ""
+            except Exception as e:
+                print(f"Error reading metadata: {e}")
+                card_name = None
+                creator_notes = ""
+                description = ""
+
+            # Default character name to the 'name' from metadata or formatted file name
+            if card_name:
+                default_name = card_name
+            else:
+                default_name = Path(file_path).stem
+                default_name = " ".join(word.capitalize() for word in default_name.replace("_", " ").replace("-", " ").split())
+
             self.add_character_name_entry.delete(0, "end")
-            self.add_character_name_entry.insert(0, formatted_name)
+            self.add_character_name_entry.insert(0, default_name)
 
+            # Skip unwanted creator_notes text
+            unwanted_notes = (
+                "This card was uploaded to https://aicharactercards.com, "
+                "please come back and rate the card if you enjoy it to help other users find the card."
+            )
+            if creator_notes == unwanted_notes:
+                creator_notes = ""  # Treat it as empty
+            elif unwanted_notes in creator_notes:
+                # Remove unwanted text if other content exists
+                creator_notes = creator_notes.replace(unwanted_notes, "").strip()
 
+            # Populate character notes
+            if creator_notes:
+                notes = creator_notes
+            elif description:
+                notes = self.truncate_to_100_words(description)
+            else:
+                notes = ""
+
+            self.add_character_notes_textbox.delete("1.0", "end")
+            self.add_character_notes_textbox.insert("1.0", notes)
 
     def export_data(self):
         print("Export Data clicked")
@@ -2203,6 +2326,20 @@ class CharacterCardManagerApp(ctk.CTk):
                 "last_modified_date": last_modified_date,
             }
             self.all_characters.append(new_character)
+
+            # Process tags if any exist in the metadata
+            try:
+                if hasattr(self, "latest_metadata"):  # Ensure metadata is loaded
+                    tags = self.latest_metadata.get("tags", [])
+                    tag_manager = SillyTavernTagManager(self.settings["sillytavern_path"])
+
+                    for tag in tags:
+                        # Assign tags to the character in the settings.json
+                        tag_manager.assign_tag(tag.strip().lower(), character_name)
+
+                    tag_manager.save_tags()  # Save the updated tags to settings.json
+            except Exception as e:
+                print(f"Error processing tags: {e}")
 
             # Refresh filtered characters and display
             self.filter_character_list()
