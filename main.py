@@ -2,14 +2,16 @@ import customtkinter as ctk
 from customtkinter import CTkFont, CTkInputDialog
 from PIL import Image, ImageTk
 from pathlib import Path
+# import re 
+# import subprocess
+# import platform
 import os
-import re 
-import subprocess
-import platform
+from datetime import datetime
 import shutil
 import sqlite3
 import json
-from functools import partial
+import threading
+# from functools import partial
 from utils.db_manager import DatabaseManager
 from utils.file_handler import FileHandler
 from datetime import datetime
@@ -605,7 +607,8 @@ class CharacterCardManagerApp(ctk.CTk):
             {
                 "id": row[0],
                 "name": row[1],
-                "image_path": str(Path("CharacterCards") / row[1] / row[2]),
+                "image_path": row[2],
+                "main_file": row[2],
                 "created_date": row[3],
                 "last_modified_date": row[4]
             }
@@ -2579,66 +2582,141 @@ class CharacterCardManagerApp(ctk.CTk):
     def sync_cards_from_sillytavern(self):
         """Sync cards from SillyTavern."""
         try:
-            # Ensure paths are normalized and resolved
-            def sanitize_path(path: str):
-                return Path(path).resolve()
+            # Create a modal for progress feedback
+            self.sync_modal = ctk.CTkToplevel(self)
+            self.sync_modal.title("Syncing Cards")
+            self.sync_modal.geometry("300x200")
+            self.sync_modal.transient(self)
+            self.sync_modal.grab_set()
 
-            characters_path = sanitize_path(self.settings["sillytavern_path"]) / "characters"
-            app_characters_path = Path("CharacterCards").resolve()
+            # Progress Label
+            progress_label = ctk.CTkLabel(self.sync_modal, text="Syncing cards, please wait...")
+            progress_label.pack(pady=(20, 10), padx=10)
 
-            if not characters_path.exists():
-                self.show_message("SillyTavern path not configured or does not exist. Set it in Settings.", "error")
-                return
+            # Progress Bar
+            progress_var = ctk.DoubleVar()
+            progress_bar = ctk.CTkProgressBar(self.sync_modal, variable=progress_var, width=250)
+            progress_bar.pack(pady=10, padx=10)
+            progress_bar.set(0)
 
-            app_characters_path.mkdir(parents=True, exist_ok=True)
+            # Batch Progress Label
+            batch_progress_label = ctk.CTkLabel(self.sync_modal, text="Processed: 0/0")
+            batch_progress_label.pack(pady=(5, 10), padx=10)
 
-            new_characters_added = False
+            # Function to perform sync in the background
+            def perform_sync():
+                try:
+                    # Normalize paths
+                    def sanitize_path(path: str):
+                        return Path(path).resolve()
 
-            for png_file in characters_path.glob("*.png"):
-                character_name = png_file.stem
-                character_folder = app_characters_path / character_name
+                    characters_path = sanitize_path(self.settings["sillytavern_path"]) / "characters"
+                    app_characters_path = Path("CharacterCards").resolve()
 
-                # Ensure character folder exists for storing additional files
-                character_folder.mkdir(parents=True, exist_ok=True)
+                    if not characters_path.exists():
+                        self.show_message("SillyTavern path not configured or does not exist. Set it in Settings.", "error")
+                        return
 
-                # Database operations
-                with sqlite3.connect(self.db_manager.db_path) as connection:
-                    cursor = connection.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM characters WHERE name = ?", (character_name,))
-                    exists = cursor.fetchone()[0]
+                    app_characters_path.mkdir(parents=True, exist_ok=True)
 
-                    if not exists:
-                        created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cursor.execute(
-                            """
-                            INSERT INTO characters (name, main_file, created_date, last_modified_date) 
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (character_name, str(png_file), created_date, created_date),
-                        )
-                        connection.commit()
-                        print(f"Character added to DB: {character_name}")
-                        new_characters_added = True
+                    new_characters_added = False
 
-            print(f"New characters added: {new_characters_added}")
+                    png_files = list(characters_path.glob("*.png"))
+                    total_files = len(png_files)
 
-            # Sync lorebooks
-            print("Starting lorebook synchronization...")
-            try:
-                lorebook_manager = LorebookManager(self.settings["sillytavern_path"], self.db_manager.db_path)
-                lorebook_manager.sync_lorebooks()
-                print("Lorebook synchronization completed.")
-            except Exception as e:
-                print(f"Error during lorebook sync: {e}")
-                self.show_message("Failed to sync lorebooks. Check logs for details.", "error")
+                    for idx, png_file in enumerate(png_files, start=1):
+                        character_name = png_file.stem
+                        character_folder = app_characters_path / character_name
 
-            # Refresh tags after sync
-            self.refresh_tags_after_sync()
-            self.show_message("Sync completed successfully!", "success")
+                        # Ensure character folder exists
+                        character_folder.mkdir(parents=True, exist_ok=True)
+
+                        # Skip cards that already exist in the database
+                        with sqlite3.connect(self.db_manager.db_path) as connection:
+                            cursor = connection.cursor()
+                            cursor.execute("SELECT id FROM characters WHERE main_file = ?", (str(png_file),))
+                            if cursor.fetchone():
+                                continue
+
+                        # Extract metadata
+                        try:
+                            metadata = PNGMetadataReader.extract_text_metadata(str(png_file))
+                            highest_spec_metadata = PNGMetadataReader.get_highest_spec_fields(metadata)
+                            new_name = highest_spec_metadata.get("name", character_name)
+                            new_notes = highest_spec_metadata.get("creator_notes", "").strip()
+                            description = highest_spec_metadata.get("description", "").strip()
+
+                            # Process notes
+                            unwanted_notes = (
+                                "This card was uploaded to https://aicharactercards.com, "
+                                "please come back and rate the card if you enjoy it to help other users find the card."
+                            )
+                            if new_notes == unwanted_notes:
+                                new_notes = ""
+                            elif unwanted_notes in new_notes:
+                                new_notes = new_notes.replace(unwanted_notes, "").strip()
+
+                            if not new_notes and description:
+                                new_notes = self.truncate_to_100_words(description)
+
+                        except Exception as e:
+                            print(f"Error reading metadata for {png_file}: {e}")
+                            new_name = character_name
+                            new_notes = ""
+
+                        # Get file creation and modification dates
+                        file_stat = os.stat(png_file)
+                        created_date = datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S")
+                        last_modified_date = datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Add new character to database
+                        with sqlite3.connect(self.db_manager.db_path) as connection:
+                            cursor = connection.cursor()
+                            cursor.execute(
+                                """
+                                INSERT INTO characters (name, main_file, notes, created_date, last_modified_date) 
+                                VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (new_name, str(png_file), new_notes, created_date, last_modified_date),
+                            )
+                            connection.commit()
+                            new_characters_added = True
+
+                        # Update progress bar safely
+                        try:
+                            if progress_bar.winfo_exists():
+                                progress_var.set(idx / total_files)
+                                progress_bar.update_idletasks()
+                        except Exception as e:
+                            print(f"Error updating progress bar: {e}")
+
+                        # Update batch progress label safely
+                        try:
+                            if batch_progress_label.winfo_exists():
+                                if idx % 10 == 0 or idx == total_files:
+                                    batch_progress_label.configure(text=f"Processed: {idx}/{total_files}")
+                                    batch_progress_label.update_idletasks()
+                        except Exception as e:
+                            print(f"Error updating batch progress label: {e}")
+
+                    # Refresh tags after sync
+                    self.refresh_tags_after_sync()
+                    self.show_message("Sync completed successfully!", "success")
+
+                except Exception as e:
+                    print(f"Error during sync: {e}")
+                    self.show_message(f"Failed to sync cards: {e}", "error")
+                finally:
+                    # Ensure modal still exists before destroying it
+                    if self.sync_modal and self.sync_modal.winfo_exists():
+                        self.sync_modal.destroy()
+
+            # Run the sync in a background thread to keep the UI responsive
+            threading.Thread(target=perform_sync, daemon=True).start()
 
         except Exception as e:
-            print(f"Error during sync: {e}")
-            self.show_message(f"Failed to sync cards: {e}", "error")
+            print(f"Error initializing sync: {e}")
+            self.show_message(f"Failed to start sync: {e}", "error")
 
 
     def refresh_tags_after_sync(self):
@@ -2650,17 +2728,18 @@ class CharacterCardManagerApp(ctk.CTk):
             self.tag_manager.reload_tags()
             print("After reload tags...")
 
-            # Debug: Print loaded tags and tag_map
-            # print(f"Loaded tags: {self.tag_manager.tags}")
-            # print(f"Loaded tag_map: {self.tag_manager.tag_map}")
-
             # Refresh the character list from the database
             self.all_characters = self.get_character_list()
             self.filtered_characters = self.all_characters.copy()  # Reset filtered characters
 
             # Update tag associations for all characters
             for character in self.all_characters:
-                character_name_png = f"{character['name']}.png"
+                main_file_path = character.get("main_file", "")
+                if not main_file_path:
+                    print(f"Character {character['name']} does not have a main_file entry. Skipping.")
+                    continue
+
+                character_name_png = Path(main_file_path).name  # Extract the filename from the path
                 normalized_name = self.tag_manager.normalize_filename(character_name_png)
 
                 # Debugging output
@@ -2674,7 +2753,7 @@ class CharacterCardManagerApp(ctk.CTk):
                     for tag in self.tag_manager.tags if tag["id"] == tag_id
                 ]
                 character["tags"] = associated_tags  # Update character tags in memory
-                print(f"Character: {character['name']}, Tags: {associated_tags}")  # Debug
+                # print(f"Character: {character['name']}, Tags: {associated_tags}")  # Debug
 
             # Refresh the UI to reflect tag updates
             self.display_characters()  # Update the character display
@@ -2686,7 +2765,6 @@ class CharacterCardManagerApp(ctk.CTk):
         except Exception as e:
             self.show_message(f"Error refreshing tags after sync: {str(e)}", "error")
             print(f"Error refreshing tags after sync: {str(e)}", "error")
-
 
 
     def link_character(self, related_character_id, modal):
