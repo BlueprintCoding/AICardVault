@@ -118,6 +118,33 @@ class LorebookManager:
             print(f"Error saving lorebook changes: {e}")
             return f"Failed to save lorebook changes: {str(e)}"
 
+    def get_linked_character_ids(self, lorebook_id):
+        """Retrieve the IDs of characters linked to the specified lorebook."""
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT character_id
+            FROM lorebook_character_links
+            WHERE lorebook_id = ?
+        """, (lorebook_id,))
+        character_ids = [row[0] for row in cursor.fetchall()]
+        connection.close()
+        return character_ids
+    
+    def get_linked_characters(self, lorebook_id):
+        """Retrieve characters linked to a specific lorebook."""
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT c.id, c.name
+            FROM characters c
+            JOIN lorebook_character_links lcl ON c.id = lcl.character_id
+            WHERE lcl.lorebook_id = ?
+        """, (lorebook_id,))
+        characters = cursor.fetchall()
+        connection.close()
+        return [{"id": char[0], "name": char[1]} for char in characters]
+
 
     def load_images(self, lorebook_id):
         """Load images associated with a lorebook."""

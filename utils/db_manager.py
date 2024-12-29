@@ -75,6 +75,17 @@ class DatabaseManager:
                 )
                 """)
 
+                # Lorebook Character Link Table
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lorebook_character_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lorebook_id INTEGER NOT NULL,
+                    character_id INTEGER NOT NULL,
+                    FOREIGN KEY (lorebook_id) REFERENCES lorebooks(id) ON DELETE CASCADE,
+                    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+                )
+                """)
+
                 # Settings Table
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
