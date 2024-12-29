@@ -1,17 +1,15 @@
 import customtkinter as ctk
-from customtkinter import CTkFont, CTkInputDialog
-from PIL import Image, ImageTk
+from customtkinter import CTkFont
+from PIL import Image
 from pathlib import Path
-# import re 
-# import subprocess
-# import platform
 import os
 from datetime import datetime
 import shutil
 import sqlite3
 import json
 import threading
-# from functools import partial
+import queue
+import weakref
 from utils.db_manager import DatabaseManager
 from utils.file_handler import FileHandler
 from datetime import datetime
@@ -53,6 +51,7 @@ class CharacterCardManagerApp(ctk.CTk):
         ctk.set_appearance_mode("dark")  # Use system theme
         ctk.set_default_color_theme("assets/AiCardVaultTheme.json")
         self.current_page = 0  # Start at the first page
+        
 
         # Initialize database and file handler
         self.db_manager = DatabaseManager()
@@ -94,6 +93,9 @@ class CharacterCardManagerApp(ctk.CTk):
         # Initialize empty lists for tags
         self.assigned_tags_full_list = []
         self.potential_tags_full_list = []
+
+        self.thumbnail_queue = queue.Queue()  # Initialize the queue
+        self.process_thumbnail_queue()        # Start processing the queue
 
                 # Initialize ExtraImagesManager
         self.extra_images_manager = ExtraImagesManager(
@@ -213,6 +215,196 @@ class CharacterCardManagerApp(ctk.CTk):
 ######################################## GUI CHARACTER LIST ##########################################
 ######################################################################################################
 
+    def create_character_list(self):
+        """Create the middle column for the character list."""
+        self.character_list_frame = ctk.CTkFrame(self)
+        self.character_list_frame.grid(row=0, column=1, sticky="nswe", padx=10, pady=10)
+
+        # # Title
+        # list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
+        # list_label.pack(pady=(10, 0))
+
+        # Search Bar
+        self.search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(
+            self.character_list_frame,
+            textvariable=self.search_var,
+            placeholder_text="Search characters...",
+            width=300,
+        )
+        search_entry.pack(pady=(10, 5), padx=10)
+
+        # Bind the search entry to the debounce function
+        self.search_var.trace_add("write", lambda *args: self.debounce_search())
+        
+        # Create a horizontal frame for the sort dropdown and tags filter button
+        sort_and_filter_frame = ctk.CTkFrame(self.character_list_frame, fg_color="transparent")
+        sort_and_filter_frame.pack(fill="x", padx=10, pady=0)  # Reduce vertical padding
+
+        # Spacer frame on the left for centering
+        left_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10,  fg_color="transparent")
+        left_spacer.pack(side="left", expand=True)
+
+        # Sort Dropdown
+        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
+        self.sort_var = ctk.StringVar(value=default_sort_order)
+        sort_dropdown = ctk.CTkOptionMenu(
+            sort_and_filter_frame,
+            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
+            variable=self.sort_var,
+            command=self.sort_character_list,
+            height=30  # Reduce height
+        )
+        sort_dropdown.pack(side="left", padx=(0, 10))  # Adjust padding
+
+        # Character Tags Filter Button
+        self.character_tags_filter = []
+        char_tags_button = ctk.CTkButton(
+            sort_and_filter_frame,
+            text="Filter by Tags",
+            command=lambda: self.open_tag_filter_modal("Character Tags", self.character_tags_filter),
+            height=30  # Match height with dropdown
+        )
+        char_tags_button.pack(side="left")
+
+        # Spacer frame on the right for centering
+        right_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10, fg_color="transparent")
+        right_spacer.pack(side="left", expand=True)
+
+        
+        # Scrollable Frame for Characters
+        self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Ensure scrollbar resets to the top at initialization
+        self.scrollable_frame._parent_canvas.yview_moveto(0)
+
+        # Navigation Buttons
+        self.create_navigation_buttons()
+
+        # Initialize Card Count Label early
+        self.card_count_label = ctk.CTkLabel(
+            self.character_list_frame,
+            text="Total Cards: 0",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.card_count_label.pack(pady=(0, 5))
+
+        # Load and display all characters initially
+        self.all_characters = self.get_character_list()
+
+        # Default Sort
+        
+        self.filtered_characters = self.all_characters.copy()  # Initially, no filtering
+        self.sort_character_list(default_sort_order)
+
+        # Display characters
+        self.display_characters()
+
+            
+    def display_characters(self):
+        """Display the characters for the current page."""
+        # Clear the current list
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        # Calculate start and end indices for the current page
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+
+        # Get the characters for the current page
+        characters_to_display = self.filtered_characters[start_index:end_index]
+
+        # Add characters to the list
+        for char in characters_to_display:
+            self.add_character_to_list(char)
+
+        # Update the card count label
+        self.card_count_label.configure(
+            text=f"Showing {len(self.filtered_characters)} Results | Page {self.current_page + 1} of {self.total_pages}"
+        )
+
+            # Reset scrollbar to the top
+        self.scrollable_frame.update_idletasks()  # Ensure the frame is fully updated
+        self.scrollable_frame._parent_canvas.yview_moveto(0)  # Scroll to the top
+
+
+    def create_navigation_buttons(self):
+        """Create navigation buttons for pagination with a page number box."""
+        nav_frame = ctk.CTkFrame(self.character_list_frame)
+        nav_frame.pack(fill="x", pady=(5, 10))
+
+        # Previous Button
+        self.prev_button = ctk.CTkButton(nav_frame, text="Previous", command=self.prev_page)
+        self.prev_button.pack(side="left", padx=5)
+
+        # Page Number Entry
+        self.page_var = ctk.StringVar(value="1")
+        self.page_entry = ctk.CTkEntry(
+            nav_frame,
+            textvariable=self.page_var,
+            width=50,
+            justify="center"
+        )
+        self.page_entry.pack(side="left", padx=5)
+        self.page_entry.bind("<Return>", lambda e: self.jump_to_page())  # Trigger jump on Enter key
+
+        # Total Pages Label
+        self.total_pages_label = ctk.CTkLabel(
+            nav_frame,
+            text=f"of {self.total_pages}",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"  # Corrected: Set text_color directly on the label
+        )
+        self.total_pages_label.pack(side="left", padx=5)
+
+        # Next Button
+        self.next_button = ctk.CTkButton(nav_frame, text="Next", command=self.next_page)
+        self.next_button.pack(side="right", padx=5)
+
+        self.update_navigation_buttons()
+        
+        
+    def jump_to_page(self):
+        """Jump to a specific page entered in the page number box."""
+        try:
+            page_number = int(self.page_var.get()) - 1  # Convert to zero-based index
+            if 0 <= page_number < self.total_pages:
+                self.current_page = page_number
+                self.display_characters()
+                self.update_navigation_buttons()
+            else:
+                self.show_message("Invalid page number.", "error")
+        except ValueError:
+            self.show_message("Please enter a valid number.", "error")
+
+    def update_navigation_buttons(self):
+        """Enable or disable navigation buttons based on the current page and update page number."""
+        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
+
+        # Update page number and total pages label
+        self.page_var.set(str(self.current_page + 1))
+        self.total_pages_label.configure(text=f"of {self.total_pages}")
+
+    def prev_page(self):
+        """Go to the previous page."""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.display_characters()
+            self.update_navigation_buttons()
+            self.scrollable_frame._parent_canvas.yview_moveto(0)
+
+    def next_page(self):
+        """Go to the next page."""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.display_characters()
+            self.update_navigation_buttons()
+            self.scrollable_frame._parent_canvas.yview_moveto(0)
+
+
     def filter_character_list(self, no_tags_only=False):
         """Filter the character list based on search query and selected tags."""
         query = self.search_var.get().lower().strip()
@@ -294,7 +486,7 @@ class CharacterCardManagerApp(ctk.CTk):
         char_frame = ctk.CTkFrame(self.scrollable_frame, corner_radius=5, border_width=0, border_color="")
         char_frame.character_id = character["id"]  # Assign the character ID
         char_frame.character_name = character["name"]  # Assign the character name
-        char_frame.pack(pady=(0,1), padx=5, fill="x")
+        char_frame.pack(pady=(0, 1), padx=5, fill="x")
 
         image_path = character.get("image_path", "assets/default_thumbnail.png")
         created_date = character.get("created_date", "Unknown Date")
@@ -308,13 +500,21 @@ class CharacterCardManagerApp(ctk.CTk):
         char_frame.grid_columnconfigure(0, weight=0)  # Fixed size for image column
         char_frame.grid_columnconfigure(1, weight=1)  # Flexible size for text column
 
-        # Add Thumbnail
-        thumbnail = self.create_thumbnail(image_path)
-        thumbnail_label = ctk.CTkLabel(char_frame, image=thumbnail, text="")
-        thumbnail_label.image = thumbnail
+        # Add Placeholder Thumbnail
+        placeholder_thumbnail = ctk.CTkImage(Image.open("assets/default_thumbnail.png"), size=(50, 75))
+        thumbnail_label = ctk.CTkLabel(char_frame, image=placeholder_thumbnail, text="")
         thumbnail_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky="n")
 
-        # Character Name Label
+        # Add Thumbnail with lazy loading
+        thumbnail_label = ctk.CTkLabel(char_frame, text="")
+        thumbnail_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky="n")
+        self.create_thumbnail(
+            image_path,
+            callback=lambda widget, thumbnail: widget.configure(image=thumbnail),
+            widget_ref=weakref.ref(thumbnail_label)
+        )
+
+            # Character Name Label
         name_label = ctk.CTkLabel(char_frame, text=character["name"], anchor="w", font=ctk.CTkFont(size=14, weight="bold"))
         name_label.grid(row=0, column=1, sticky="w", pady=2, padx=5)
 
@@ -324,15 +524,13 @@ class CharacterCardManagerApp(ctk.CTk):
 
         # Last Modified Date Label
         modified_date_label = ctk.CTkLabel(char_frame, text=f"Last Modified: {formatted_last_modified_date}", anchor="w", font=ctk.CTkFont(size=12))
-        modified_date_label.grid(row=2, column=1, sticky="w", pady=(0,3), padx=5)
+        modified_date_label.grid(row=2, column=1, sticky="w", pady=(0, 3), padx=5)
 
         # Bind click events to `select_character_by_id`
         widgets_to_bind = [char_frame, thumbnail_label, name_label, created_date_label, modified_date_label]
         for widget in widgets_to_bind:
             widget.bind("<Button-1>", lambda e, char_id=character["id"]: self.select_character_by_id(char_id))
 
-        # Update card count
-        self.card_count_label.configure(text=f"Total Cards: {len(self.all_characters)}")
         
     def remove_character_from_list(self, character_id):
         """Remove the character from the in-memory lists and refresh the UI."""
@@ -1421,197 +1619,6 @@ class CharacterCardManagerApp(ctk.CTk):
             self.add_character_notes_textbox.insert("1.0", notes)
 
 
-######################################################################################################
-######################################## Character List  #############################################
-######################################################################################################
-    def create_character_list(self):
-        """Create the middle column for the character list."""
-        self.character_list_frame = ctk.CTkFrame(self)
-        self.character_list_frame.grid(row=0, column=1, sticky="nswe", padx=10, pady=10)
-
-        # # Title
-        # list_label = ctk.CTkLabel(self.character_list_frame, text="Character List", font=ctk.CTkFont(size=14, weight="bold"))
-        # list_label.pack(pady=(10, 0))
-
-        # Search Bar
-        self.search_var = ctk.StringVar()
-        search_entry = ctk.CTkEntry(
-            self.character_list_frame,
-            textvariable=self.search_var,
-            placeholder_text="Search characters...",
-            width=300,
-        )
-        search_entry.pack(pady=(10, 5), padx=10)
-
-        # Bind the search entry to the debounce function
-        self.search_var.trace_add("write", lambda *args: self.debounce_search())
-        
-        # Create a horizontal frame for the sort dropdown and tags filter button
-        sort_and_filter_frame = ctk.CTkFrame(self.character_list_frame, fg_color="transparent")
-        sort_and_filter_frame.pack(fill="x", padx=10, pady=0)  # Reduce vertical padding
-
-        # Spacer frame on the left for centering
-        left_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10,  fg_color="transparent")
-        left_spacer.pack(side="left", expand=True)
-
-        # Sort Dropdown
-        default_sort_order = self.db_manager.get_setting("default_sort_order", "A - Z")
-        self.sort_var = ctk.StringVar(value=default_sort_order)
-        sort_dropdown = ctk.CTkOptionMenu(
-            sort_and_filter_frame,
-            values=["A - Z", "Z - A", "Newest", "Oldest", "Most Recently Edited"],
-            variable=self.sort_var,
-            command=self.sort_character_list,
-            height=30  # Reduce height
-        )
-        sort_dropdown.pack(side="left", padx=(0, 10))  # Adjust padding
-
-        # Character Tags Filter Button
-        self.character_tags_filter = []
-        char_tags_button = ctk.CTkButton(
-            sort_and_filter_frame,
-            text="Filter by Tags",
-            command=lambda: self.open_tag_filter_modal("Character Tags", self.character_tags_filter),
-            height=30  # Match height with dropdown
-        )
-        char_tags_button.pack(side="left")
-
-        # Spacer frame on the right for centering
-        right_spacer = ctk.CTkFrame(sort_and_filter_frame, width=0, height=10, fg_color="transparent")
-        right_spacer.pack(side="left", expand=True)
-
-        
-        # Scrollable Frame for Characters
-        self.scrollable_frame = ctk.CTkScrollableFrame(self.character_list_frame)
-        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-            # Ensure scrollbar resets to the top at initialization
-        self.scrollable_frame._parent_canvas.yview_moveto(0)
-
-        # Navigation Buttons
-        self.create_navigation_buttons()
-
-        # Initialize Card Count Label early
-        self.card_count_label = ctk.CTkLabel(
-            self.character_list_frame,
-            text="Total Cards: 0",
-            font=ctk.CTkFont(size=12),
-            text_color="gray"
-        )
-        self.card_count_label.pack(pady=(0, 5))
-
-        # Load and display all characters initially
-        self.all_characters = self.get_character_list()
-
-        # Default Sort
-        
-        self.filtered_characters = self.all_characters.copy()  # Initially, no filtering
-        self.sort_character_list(default_sort_order)
-
-        # Display characters
-        self.display_characters()
-
-            
-    def display_characters(self):
-        """Display the characters for the current page."""
-        # Clear the current list
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-
-        # Calculate start and end indices for the current page
-        start_index = self.current_page * self.items_per_page
-        end_index = start_index + self.items_per_page
-
-        # Get the characters for the current page
-        characters_to_display = self.filtered_characters[start_index:end_index]
-
-        # Add characters to the list
-        for char in characters_to_display:
-            self.add_character_to_list(char)
-
-        # Update the card count label
-        self.card_count_label.configure(
-            text=f"Showing {len(self.filtered_characters)} Results | Page {self.current_page + 1} of {self.total_pages}"
-        )
-
-            # Reset scrollbar to the top
-        self.scrollable_frame.update_idletasks()  # Ensure the frame is fully updated
-        self.scrollable_frame._parent_canvas.yview_moveto(0)  # Scroll to the top
-
-
-    def create_navigation_buttons(self):
-        """Create navigation buttons for pagination with a page number box."""
-        nav_frame = ctk.CTkFrame(self.character_list_frame)
-        nav_frame.pack(fill="x", pady=(5, 10))
-
-        # Previous Button
-        self.prev_button = ctk.CTkButton(nav_frame, text="Previous", command=self.prev_page)
-        self.prev_button.pack(side="left", padx=5)
-
-        # Page Number Entry
-        self.page_var = ctk.StringVar(value="1")
-        self.page_entry = ctk.CTkEntry(
-            nav_frame,
-            textvariable=self.page_var,
-            width=50,
-            justify="center"
-        )
-        self.page_entry.pack(side="left", padx=5)
-        self.page_entry.bind("<Return>", lambda e: self.jump_to_page())  # Trigger jump on Enter key
-
-        # Total Pages Label
-        self.total_pages_label = ctk.CTkLabel(
-            nav_frame,
-            text=f"of {self.total_pages}",
-            font=ctk.CTkFont(size=12),
-            text_color="gray"  # Corrected: Set text_color directly on the label
-        )
-        self.total_pages_label.pack(side="left", padx=5)
-
-        # Next Button
-        self.next_button = ctk.CTkButton(nav_frame, text="Next", command=self.next_page)
-        self.next_button.pack(side="right", padx=5)
-
-        self.update_navigation_buttons()
-        
-        
-    def jump_to_page(self):
-        """Jump to a specific page entered in the page number box."""
-        try:
-            page_number = int(self.page_var.get()) - 1  # Convert to zero-based index
-            if 0 <= page_number < self.total_pages:
-                self.current_page = page_number
-                self.display_characters()
-                self.update_navigation_buttons()
-            else:
-                self.show_message("Invalid page number.", "error")
-        except ValueError:
-            self.show_message("Please enter a valid number.", "error")
-
-    def update_navigation_buttons(self):
-        """Enable or disable navigation buttons based on the current page and update page number."""
-        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
-        self.next_button.configure(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
-
-        # Update page number and total pages label
-        self.page_var.set(str(self.current_page + 1))
-        self.total_pages_label.configure(text=f"of {self.total_pages}")
-
-    def prev_page(self):
-        """Go to the previous page."""
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.display_characters()
-            self.update_navigation_buttons()
-            self.scrollable_frame._parent_canvas.yview_moveto(0)
-
-    def next_page(self):
-        """Go to the next page."""
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.display_characters()
-            self.update_navigation_buttons()
-            self.scrollable_frame._parent_canvas.yview_moveto(0)
 
 
 ######################################################################################################
@@ -2900,41 +2907,77 @@ class CharacterCardManagerApp(ctk.CTk):
         # Set a new timer to execute the actual search function
         self.search_debounce_timer = self.after(300, self.filter_character_list)
 
+    def create_thumbnail(self, image_path, callback=None, widget_ref=None):
+        """Create a thumbnail for the character list using CTkImage with thread-safe UI updates."""
+        def load_thumbnail():
+            try:
+                img = Image.open(image_path)
 
-    def create_thumbnail(self, image_path):
-        """Create a thumbnail for the character list using CTkImage."""
+                # Calculate the target aspect ratio
+                target_aspect_ratio = 50 / 75
+                img_width, img_height = img.size
+                img_aspect_ratio = img_width / img_height
+
+                # Crop the image to the target aspect ratio
+                if img_aspect_ratio > target_aspect_ratio:
+                    # Image is wider than target aspect ratio
+                    new_width = int(img_height * target_aspect_ratio)
+                    offset = (img_width - new_width) // 2
+                    img = img.crop((offset, 0, offset + new_width, img_height))
+                elif img_aspect_ratio < target_aspect_ratio:
+                    # Image is taller than target aspect ratio
+                    new_height = int(img_width / target_aspect_ratio)
+                    offset = (img_height - new_height) // 2
+                    img = img.crop((0, offset, img_width, offset + new_height))
+
+                # Resize to the target dimensions
+                img = img.resize((50, 75), Image.Resampling.LANCZOS)
+                thumbnail = ctk.CTkImage(img, size=(50, 75))
+            except Exception:
+                # Fallback to default image if loading fails
+                default_img = Image.open("assets/default_thumbnail.png")
+                thumbnail = ctk.CTkImage(default_img, size=(50, 75))
+
+            # If a callback is provided, pass the thumbnail to it
+            if callback:
+                self.thumbnail_queue.put((callback, thumbnail, widget_ref))
+            else:
+                # Return the thumbnail directly for non-async calls
+                return thumbnail
+
+        # Start the thumbnail loading in a separate thread if a callback is provided
+        if callback:
+            threading.Thread(target=load_thumbnail, daemon=True).start()
+        else:
+            return load_thumbnail()
+
+
+
+    def process_thumbnail_queue(self):
+        """Process thumbnails from the queue on the main thread."""
         try:
-            # Open the image
-            img = Image.open(image_path)
+            while not self.thumbnail_queue.empty():
+                callback, thumbnail, widget_ref = self.thumbnail_queue.get_nowait()
 
-            # Calculate the target aspect ratio
-            target_aspect_ratio = 50 / 75
+                # Check if the widget reference is still valid
+                if widget_ref:
+                    widget = widget_ref()
+                    if widget and widget.winfo_exists():
+                        callback(widget, thumbnail)
+                else:
+                    # If no widget_ref, directly call the callback
+                    callback(thumbnail)
+        except queue.Empty:
+            pass
+        # Schedule the next check
+        self.after(100, self.process_thumbnail_queue)
 
-            # Get the image's current dimensions
-            img_width, img_height = img.size
-            img_aspect_ratio = img_width / img_height
 
-            # Crop the image to the target aspect ratio
-            if img_aspect_ratio > target_aspect_ratio:
-                # Image is wider than target aspect ratio
-                new_width = int(img_height * target_aspect_ratio)
-                offset = (img_width - new_width) // 2
-                img = img.crop((offset, 0, offset + new_width, img_height))
-            elif img_aspect_ratio < target_aspect_ratio:
-                # Image is taller than target aspect ratio
-                new_height = int(img_width / target_aspect_ratio)
-                offset = (img_height - new_height) // 2
-                img = img.crop((0, offset, img_width, offset + new_height))
+    def update_thumbnail_label(self, widget, thumbnail):
+        """Safely update the thumbnail label with a new image."""
+        if widget and widget.winfo_exists():
+            widget.configure(image=thumbnail)
 
-            # Resize to the target dimensions
-            img = img.resize((50, 75), Image.Resampling.LANCZOS)
-
-            # Return the resized image wrapped in a CTkImage
-            return ctk.CTkImage(img, size=(50, 75))
-        except Exception:
-            # Use default thumbnail if image cannot be loaded
-            default_img = Image.open("assets/default_thumbnail.png")
-            return ctk.CTkImage(default_img, size=(50, 75))
         
     def create_thumbnail_small(self, image_path):
         """Create a thumbnail for the character list using CTkImage."""
